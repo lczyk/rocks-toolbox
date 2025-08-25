@@ -27,10 +27,11 @@ import io
 import os
 
 __author__ = "Marcin Konowalczyk"
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 __changelog__ = [
-    (__version__, "retry with old-releases if not found in archive", "@lczyk"),
+    (__version__, "add --refresh-cache option", "@lczyk"),
+    ("0.1.1", "retry with old-releases if not found in archive", "@lczyk"),
     ("0.1.0", "inital version", "@lczyk"),
 ]
 
@@ -60,14 +61,17 @@ def geturl(url: str) -> tuple[int, bytes]:
 
 def get_package_list(name: str, component: str) -> set[str]:
     if component not in ("main", "restricted", "universe", "multiverse"):
-        raise ValueError(f"Invalid component: {component}. Must be one of 'main', 'restricted', 'universe', or 'multiverse'.")
+        raise ValueError(
+            f"Invalid component: {component}. Must be one of 'main', 'restricted', 'universe', or 'multiverse'."
+        )
 
     package_url = f"https://archive.ubuntu.com/ubuntu/dists/{name}/{component}/binary-amd64/Packages.gz"
     code, res = geturl(package_url)
 
     if code != 200:
         # retry with old-releases if not found in archive
-        # print(f"Warning: Failed to download package list from '{package_url}'. HTTP status code: {code}. Retrying with old-releases.ubuntu.com...")
+        # print(f"Warning: Failed to download package list from '{package_url}'. HTTP status code: {code}.
+        # Retrying with old-releases.ubuntu.com...")
         package_url = f"https://old-releases.ubuntu.com/ubuntu/dists/{name}/{component}/binary-amd64/Packages.gz"
         # print(f"Retrying with URL: {package_url}")
         code, res = geturl(package_url)
@@ -125,6 +129,7 @@ VERISON_TO_CODENAME = {
     "25.04": "plucky",
     "25.10": "questing",
 }
+
 
 def parse_args() -> argparse.Namespace:
     import argparse
@@ -201,8 +206,18 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
+    if os.getenv("MULTI_APT_CACHE_DIR", None) is not None and "--cache-dir" not in " ".join(os.sys.argv):
+        parser.set_defaults(cache_dir=os.getenv("MULTI_APT_CACHE_DIR", None))
+
+    parser.add_argument(
+        "--refresh-cache",
+        action="store_true",
+        help="Do not read from cache, download package lists again even if cached (default: False).",
+    )
+
     parsed = parser.parse_args()
 
+    # Sanity checks
     assert isinstance(parsed.ubuntu, list)
     assert isinstance(parsed.component, list)
 
@@ -212,14 +227,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    if args.cache_dir is None:
-        args.cache_dir = os.getenv("MULTI_APT_CACHE_DIR", None)
-
     all_packages: set[str] = set()
     for ubuntu in args.ubuntu:
         codename = VERISON_TO_CODENAME.get(ubuntu, ubuntu)
         for component in args.component:
-            if args.cache_dir:
+            if args.cache_dir and not args.refresh_cache:
                 cache_file = os.path.join(args.cache_dir, f"ubuntu-{codename}-{component}-packages.txt")
                 if os.path.isfile(cache_file):
                     with open(cache_file, encoding="utf-8") as f:
@@ -230,6 +242,7 @@ def main() -> None:
             packages = get_package_list(codename, component)
 
             if args.cache_dir:
+                # NOTE: still cache even if --refresh-cache is set, just don't use the cache
                 cache_packages_for_component(codename, component, packages, args.cache_dir)
             all_packages.update(packages)
 
