@@ -27,10 +27,11 @@ import io
 import os
 
 __author__ = "Marcin Konowalczyk"
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 __changelog__ = [
-    (__version__, "add --refresh-cache option", "@lczyk"),
+    (__version__, "add --repo option", "@lczyk"),
+    ("0.1.2", "add --refresh-cache option", "@lczyk"),
     ("0.1.1", "retry with old-releases if not found in archive", "@lczyk"),
     ("0.1.0", "inital version", "@lczyk"),
 ]
@@ -59,11 +60,16 @@ def geturl(url: str) -> tuple[int, bytes]:
     return code, res
 
 
-def get_package_list(name: str, component: str) -> set[str]:
+def get_package_list(name: str, component: str, repo: str) -> set[str]:
     if component not in ("main", "restricted", "universe", "multiverse"):
         raise ValueError(
             f"Invalid component: {component}. Must be one of 'main', 'restricted', 'universe', or 'multiverse'."
         )
+    if repo not in ("main", "security", "updates", "backports"):
+        raise ValueError(f"Invalid repo: {repo}. Must be one of '', 'security', 'updates', or 'backports'.")
+
+    if repo != "main":
+        name = f"{name}-{repo}"
 
     package_url = f"https://archive.ubuntu.com/ubuntu/dists/{name}/{component}/binary-amd64/Packages.gz"
     code, res = geturl(package_url)
@@ -85,9 +91,13 @@ def get_package_list(name: str, component: str) -> set[str]:
     return set(line.split(" ")[1] for line in content.splitlines() if line.startswith("Package: "))
 
 
-def cache_packages_for_component(name: str, component: str, packages: set[str], cache_dir: str) -> None:
+def to_cache_file(codename: str, component: str, repo: str) -> str:
+    return f"ubuntu-{codename}-{component}-{repo}-packages.txt"
+
+
+def cache_packages_for_component(name: str, component: str, repo: str, packages: set[str], cache_dir: str) -> None:
     os.makedirs(cache_dir, exist_ok=True)
-    cache_file = os.path.join(cache_dir, f"ubuntu-{name}-{component}-packages.txt")
+    cache_file = os.path.join(cache_dir, to_cache_file(name, component, repo))
     with open(cache_file, "w", encoding="utf-8") as f:
         f.write("\n".join(sorted(packages)))
         f.write("\n")
@@ -196,6 +206,32 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
+    def _validate_repos(value: str) -> list[str]:
+        if value == "all":
+            return ["main", "security", "updates", "backports"]
+        values = value.split("|")
+        for v in values:
+            if v not in ("main", "security", "updates", "backports"):
+                raise argparse.ArgumentTypeError(
+                    f"Invalid repo: {v}. Must be one of '', 'security', 'updates', or 'backports'."
+                )
+        if len(values) < 1:
+            raise argparse.ArgumentTypeError("At least one repo must be specified.")
+        return values
+
+    parser.register("type", "repos", _validate_repos)
+
+    parser.add_argument(
+        "--repos",
+        type="repos",
+        default="all",
+        help=(
+            "Ubuntu repository to fetch packages from (default: main). Can also be "
+            "`main|security` to get packages from both repositories or `all` to get "
+            "packages from all four repositories."
+        ),
+    )
+
     parser.add_argument(
         "--cache-dir",
         type=str,
@@ -231,20 +267,21 @@ def main() -> None:
     for ubuntu in args.ubuntu:
         codename = VERISON_TO_CODENAME.get(ubuntu, ubuntu)
         for component in args.component:
-            if args.cache_dir and not args.refresh_cache:
-                cache_file = os.path.join(args.cache_dir, f"ubuntu-{codename}-{component}-packages.txt")
-                if os.path.isfile(cache_file):
-                    with open(cache_file, encoding="utf-8") as f:
-                        packages = set(line.strip() for line in f if line.strip())
-                    all_packages.update(packages)
-                    continue
+            for repo in args.repos:
+                if args.cache_dir and not args.refresh_cache:
+                    cache_file = os.path.join(args.cache_dir, to_cache_file(codename, component, repo))
+                    if os.path.isfile(cache_file):
+                        with open(cache_file, encoding="utf-8") as f:
+                            packages = set(line.strip() for line in f if line.strip())
+                        all_packages.update(packages)
+                        continue
 
-            packages = get_package_list(codename, component)
+                packages = get_package_list(codename, component, repo)
 
-            if args.cache_dir:
-                # NOTE: still cache even if --refresh-cache is set, just don't use the cache
-                cache_packages_for_component(codename, component, packages, args.cache_dir)
-            all_packages.update(packages)
+                if args.cache_dir:
+                    # NOTE: still cache even if --refresh-cache is set, just don't use the cache
+                    cache_packages_for_component(codename, component, repo, packages, args.cache_dir)
+                all_packages.update(packages)
 
     print("\n".join(sorted(all_packages)))
 

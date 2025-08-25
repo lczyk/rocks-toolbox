@@ -3,7 +3,4 @@
 
 
 def test_imports() -> None:
-    import sys
-
-    print(sys.path)
     import multi_apt_cache  # noqa: F401
