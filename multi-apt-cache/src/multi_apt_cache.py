@@ -25,14 +25,16 @@ import argparse
 import gzip
 import io
 import os
+import re
 import sys
 from typing import Callable
 
 __author__ = "Marcin Konowalczyk"
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __changelog__ = [
-    (__version__, "change cache format to include version and deps", "@lczyk"),
+    (__version__, "add --jobs + other perf improvements", "@lczyk"),
+    ("0.2.0", "change cache format to include version and deps", "@lczyk"),
     ("0.1.3", "add --repo option", "@lczyk"),
     ("0.1.2", "add --refresh-cache option", "@lczyk"),
     ("0.1.1", "retry with old-releases if not found in archive", "@lczyk"),
@@ -88,46 +90,44 @@ def get_package_content(name: str, component: str, repo: str) -> str:
     with gzip.GzipFile(fileobj=io.BytesIO(res)) as f:
         content = f.read().decode("utf-8")
 
+    # print(f"Downloaded {len(content)} bytes from {package_url}")
+
     return content
+
+
+_re_cache: dict[tuple[str, ...], re.Pattern[str]] = {}
+
+DEFAULT_FIELDS = ("\nPackage: ", "Version: ", "Depends: ", "Pre-Depends: ", "Recommends: ", "Suggests ")
 
 
 def _abbreviate_package_content(
     content: str,
-    fields: tuple[str, ...] = ("Package: ", "Version: ", "Depends: ", "Pre-Depends: ", "Recommends: ", "Suggests "),
-    block_delimiter: str = "\n\n",
-) -> list[list[str]]:
-    """Abbreviate package content to only include certain fields.
-    Return list of blocks, each block is a list of lines."""
-    blocks = content.split(block_delimiter)
-    _fields = set(fields)
-    new_blocks = []
-    for block in blocks:
-        new_block = []
-        for line in block.splitlines():
-            for field in _fields:
-                if line.startswith(field):
-                    new_block.append(line)
-                    break
-        if new_block:
-            new_blocks.append(new_block)
-    return new_blocks
+    fields: tuple[str, ...] = DEFAULT_FIELDS,
+) -> str:
+    """Abbreviate package content to only include certain fields."""
+
+    if not fields:
+        raise ValueError("At least one field must be specified.")
+
+    if fields in _re_cache:
+        compiled_re = _re_cache[fields]
+    else:
+        pattern = r"^((?:" + "|".join(re.escape(field) for field in fields) + r").*?$)"
+        compiled_re = re.compile(pattern, re.MULTILINE)
+        _re_cache[fields] = compiled_re
+
+    # remove any line which doe snot mathch the pattern
+    abbreviated_lines = re.findall(compiled_re, content)
+    abbreviated_content = "\n".join(abbreviated_lines)
+
+    return abbreviated_content
 
 
-def _abbreviated_blocks_to_package_list(abbreviated_blocks: list[list[str]]) -> set[str]:
-    packages = set()
-    for block in abbreviated_blocks:
-        for line in block:
-            if line.startswith("Package: "):
-                package_name = line.split(" ")[1]
-                packages.add(package_name)
-                break
-    return packages
+PACKAGE_RE = re.compile(r"^Package:\s*(\S+)", re.MULTILINE)
 
 
-def _get_package_list(name: str, component: str, repo: str) -> set[str]:
-    content = get_package_content(name, component, repo)
-    abbreviated_blocks = _abbreviate_package_content(content)
-    return _abbreviated_blocks_to_package_list(abbreviated_blocks)
+def _abbreviatd_content_to_package_list(abbreviated_content: str) -> set[str]:
+    return set(PACKAGE_RE.findall(abbreviated_content))
 
 
 def get_package_list(
@@ -139,33 +139,32 @@ def get_package_list(
     refresh_cache: bool = False,
 ) -> set[str]:
     # Cache the abbreviated blocks to avoid re-downloading and re-parsing
-    abbreviated_blocks: list[list[str]] | None = None
+    abbreviated_content: str | None = None
+    read_from_cache = False
 
     if cache_dir is not None and not refresh_cache:
         cache_file = os.path.join(cache_dir, to_cache_file(name, component, repo))
         if os.path.isfile(cache_file):
             with open(cache_file, encoding="utf-8") as f:
-                content = f.read()
-            abbreviated_blocks = []
-            for block in content.strip().split("\n\n"):
-                abbreviated_blocks.append(block.splitlines())
+                abbreviated_content = f.read()
+            read_from_cache = True
 
-    if abbreviated_blocks is None:
+    if abbreviated_content is None:
         content = get_package_content(name, component, repo)
-        abbreviated_blocks = _abbreviate_package_content(content)
+        # abbreviated_blocks = _abbreviate_package_content(content)
+        abbreviated_content = _abbreviate_package_content(content)
 
-    if cache_dir is not None:
+    if cache_dir is not None and not read_from_cache:
         os.makedirs(cache_dir, exist_ok=True)
         cache_file = os.path.join(cache_dir, to_cache_file(name, component, repo))
-        abbreviated_content = "\n\n".join("\n".join(block) for block in abbreviated_blocks)
         with open(cache_file, "w", encoding="utf-8") as f:
             f.write(abbreviated_content)
             f.write("\n\n")
 
     # Sanity check
-    assert abbreviated_blocks is not None
+    assert abbreviated_content is not None
 
-    return _abbreviated_blocks_to_package_list(abbreviated_blocks)
+    return _abbreviatd_content_to_package_list(abbreviated_content)
 
 
 def to_cache_file(codename: str, component: str, repo: str) -> str:
@@ -352,7 +351,21 @@ def parse_args() -> argparse.Namespace:
         help="Do not read from cache, download package lists again even if cached (default: False).",
     )
 
+    parser.add_argument(
+        "-j",
+        "--jobs",
+        type=int,
+        default=0,  # -1 means as many as possible, 0 means no parallelism
+        help=(
+            "Number of parallel jobs (default: 0, no parallelism). Set to -1 to use as many parallel "
+            "jobs as possible (determined by os.cpu_count())."
+        ),
+    )
+
     parsed = parser.parse_args()
+
+    if parsed.jobs < 0:
+        parsed.jobs = os.cpu_count() or 1
 
     # Sanity checks
     assert isinstance(parsed.ubuntu, list)
@@ -365,25 +378,51 @@ def main() -> None:
     args = parse_args()
 
     all_packages: set[str] = set()
-    for ubuntu in args.ubuntu:
-        codename = VERISON_TO_CODENAME.get(ubuntu, ubuntu)
-        for component in args.component:
-            for repo in args.repos:
-                all_packages.update(
-                    get_package_list(
-                        codename,
-                        component,
-                        repo,
-                        cache_dir=args.cache_dir,
-                        refresh_cache=args.refresh_cache,
+
+    if args.jobs == 0:
+        # NOTE: this is the single threaded version. Writing this out as opposed
+        #       to using ThreadPoolExecutor with max_workers=1
+        #       to make it easier to debug and profile.
+
+        for ubuntu in args.ubuntu:
+            codename = VERISON_TO_CODENAME.get(ubuntu, ubuntu)
+            for component in args.component:
+                for repo in args.repos:
+                    all_packages.update(
+                        get_package_list(
+                            codename,
+                            component,
+                            repo,
+                            cache_dir=args.cache_dir,
+                            refresh_cache=args.refresh_cache,
+                        )
                     )
-                )
+
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        futures = []
+        with ThreadPoolExecutor(max_workers=args.jobs) as executor:
+            for ubuntu in args.ubuntu:
+                codename = VERISON_TO_CODENAME.get(ubuntu, ubuntu)
+                for component in args.component:
+                    for repo in args.repos:
+                        futures.append(  # noqa: PERF401
+                            executor.submit(
+                                get_package_list,
+                                codename,
+                                component,
+                                repo,
+                                cache_dir=args.cache_dir,
+                                refresh_cache=args.refresh_cache,
+                            )
+                        )
+
+        for future in futures:
+            all_packages.update(future.result())
 
     print("\n".join(sorted(all_packages)))
 
 
 if __name__ == "__main__":
     main()
-
-    # package_url = f"https://archive.ubuntu.com/ubuntu/dists/jammy/main/binary-amd64/Packages.gz"
-    # code, res = geturl(package_url)
