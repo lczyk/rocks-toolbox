@@ -25,12 +25,15 @@ import argparse
 import gzip
 import io
 import os
+import sys
+from typing import Callable
 
 __author__ = "Marcin Konowalczyk"
-__version__ = "0.1.3"
+__version__ = "0.2.0"
 
 __changelog__ = [
-    (__version__, "add --repo option", "@lczyk"),
+    (__version__, "change cache format to include version and deps", "@lczyk"),
+    ("0.1.3", "add --repo option", "@lczyk"),
     ("0.1.2", "add --refresh-cache option", "@lczyk"),
     ("0.1.1", "retry with old-releases if not found in archive", "@lczyk"),
     ("0.1.0", "inital version", "@lczyk"),
@@ -60,7 +63,7 @@ def geturl(url: str) -> tuple[int, bytes]:
     return code, res
 
 
-def get_package_list(name: str, component: str, repo: str) -> set[str]:
+def get_package_content(name: str, component: str, repo: str) -> str:
     if component not in ("main", "restricted", "universe", "multiverse"):
         raise ValueError(
             f"Invalid component: {component}. Must be one of 'main', 'restricted', 'universe', or 'multiverse'."
@@ -76,10 +79,7 @@ def get_package_list(name: str, component: str, repo: str) -> set[str]:
 
     if code != 200:
         # retry with old-releases if not found in archive
-        # print(f"Warning: Failed to download package list from '{package_url}'. HTTP status code: {code}.
-        # Retrying with old-releases.ubuntu.com...")
         package_url = f"https://old-releases.ubuntu.com/ubuntu/dists/{name}/{component}/binary-amd64/Packages.gz"
-        # print(f"Retrying with URL: {package_url}")
         code, res = geturl(package_url)
 
     if code != 200:
@@ -88,19 +88,93 @@ def get_package_list(name: str, component: str, repo: str) -> set[str]:
     with gzip.GzipFile(fileobj=io.BytesIO(res)) as f:
         content = f.read().decode("utf-8")
 
-    return set(line.split(" ")[1] for line in content.splitlines() if line.startswith("Package: "))
+    return content
+
+
+def _abbreviate_package_content(
+    content: str,
+    fields: tuple[str, ...] = ("Package: ", "Version: ", "Depends: ", "Pre-Depends: ", "Recommends: ", "Suggests "),
+    block_delimiter: str = "\n\n",
+) -> list[list[str]]:
+    """Abbreviate package content to only include certain fields.
+    Return list of blocks, each block is a list of lines."""
+    blocks = content.split(block_delimiter)
+    _fields = set(fields)
+    new_blocks = []
+    for block in blocks:
+        new_block = []
+        for line in block.splitlines():
+            for field in _fields:
+                if line.startswith(field):
+                    new_block.append(line)
+                    break
+        if new_block:
+            new_blocks.append(new_block)
+    return new_blocks
+
+
+def _abbreviated_blocks_to_package_list(abbreviated_blocks: list[list[str]]) -> set[str]:
+    packages = set()
+    for block in abbreviated_blocks:
+        for line in block:
+            if line.startswith("Package: "):
+                package_name = line.split(" ")[1]
+                packages.add(package_name)
+                break
+    return packages
+
+
+def _get_package_list(name: str, component: str, repo: str) -> set[str]:
+    content = get_package_content(name, component, repo)
+    abbreviated_blocks = _abbreviate_package_content(content)
+    return _abbreviated_blocks_to_package_list(abbreviated_blocks)
+
+
+def get_package_list(
+    name: str,
+    component: str,
+    repo: str,
+    *,
+    cache_dir: str | None = None,
+    refresh_cache: bool = False,
+) -> set[str]:
+    # Cache the abbreviated blocks to avoid re-downloading and re-parsing
+    abbreviated_blocks: list[list[str]] | None = None
+
+    if cache_dir is not None and not refresh_cache:
+        cache_file = os.path.join(cache_dir, to_cache_file(name, component, repo))
+        if os.path.isfile(cache_file):
+            with open(cache_file, encoding="utf-8") as f:
+                content = f.read()
+            abbreviated_blocks = []
+            for block in content.strip().split("\n\n"):
+                abbreviated_blocks.append(block.splitlines())
+
+    if abbreviated_blocks is None:
+        content = get_package_content(name, component, repo)
+        abbreviated_blocks = _abbreviate_package_content(content)
+
+    if cache_dir is not None:
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_file = os.path.join(cache_dir, to_cache_file(name, component, repo))
+        abbreviated_content = "\n\n".join("\n".join(block) for block in abbreviated_blocks)
+        with open(cache_file, "w", encoding="utf-8") as f:
+            f.write(abbreviated_content)
+            f.write("\n\n")
+
+    # Sanity check
+    assert abbreviated_blocks is not None
+
+    return _abbreviated_blocks_to_package_list(abbreviated_blocks)
 
 
 def to_cache_file(codename: str, component: str, repo: str) -> str:
-    return f"ubuntu-{codename}-{component}-{repo}-packages.txt"
+    # return f"ubuntu-{codename}-{component}-{repo}-packages.txt"
+    return f"ubuntu-{codename}{'' if repo == 'main' else '-' + repo}-{component}-packages.txt"
 
 
-def cache_packages_for_component(name: str, component: str, repo: str, packages: set[str], cache_dir: str) -> None:
-    os.makedirs(cache_dir, exist_ok=True)
-    cache_file = os.path.join(cache_dir, to_cache_file(name, component, repo))
-    with open(cache_file, "w", encoding="utf-8") as f:
-        f.write("\n".join(sorted(packages)))
-        f.write("\n")
+# no version. default to highest LTS
+DEFAULT_UBUNTU_VERSION = "24.04"
 
 
 def default_version() -> str:
@@ -114,7 +188,7 @@ def default_version() -> str:
                         return version
     except Exception:
         pass
-    return "24.04"  # no version. default to highest LTS
+    return DEFAULT_UBUNTU_VERSION
 
 
 VERISON_TO_CODENAME = {
@@ -141,6 +215,39 @@ VERISON_TO_CODENAME = {
 }
 
 
+def validate_options(
+    options: tuple[str, ...],
+    *,
+    one_of: tuple[str, ...] | None = None,  # list of strings that mean "one of the options"
+    mapping: dict[str, str] | None = None,
+    all: str | None = None,  # string that means "all options"
+    delimiter: str = "|",  # delimiter between options
+) -> Callable[[str], list[str]]:
+    options_ = set(options)
+    assert all not in options_, "'all' option cannot be one of the valid options."
+    mapping_ = mapping or {}
+    one_of_sting_ = ", ".join(one_of) if one_of is not None else ", ".join(options)
+
+    def _validator(value: str) -> list[str]:
+        if all is not None and value == all:
+            return list(options)
+        values = value.split(delimiter)
+        mapped_values = []
+        for v in values:
+            mapped_ = v.lower()
+            mapped_ = mapping_.get(mapped_, mapped_)
+
+            if mapped_ not in options_:
+                raise argparse.ArgumentTypeError(f"Invalid option: {v}. Must be one of {one_of_sting_}.")
+            mapped_values.append(mapped_)
+        values = mapped_values
+        if len(values) < 1:
+            raise argparse.ArgumentTypeError("At least one option must be specified.")
+        return values
+
+    return _validator
+
+
 def parse_args() -> argparse.Namespace:
     import argparse
 
@@ -153,18 +260,20 @@ def parse_args() -> argparse.Namespace:
         help="Show script version and exit.",
     )
 
-    def _validate_ubuntu(value: str) -> list[str]:
-        if value == "all":
-            return list(VERISON_TO_CODENAME.keys())
-        versions = value.split("|")
-        for v in versions:
-            if v not in VERISON_TO_CODENAME and v not in VERISON_TO_CODENAME.values():
-                raise argparse.ArgumentTypeError(
-                    f"Invalid version: {v}. Must be one of {', '.join(VERISON_TO_CODENAME.keys())} or their codenames."
-                )
-        if len(versions) < 1:
-            raise argparse.ArgumentTypeError("At least one version must be specified.")
-        return versions
+    one_of = ["all"]
+    for i, (v, c) in enumerate(VERISON_TO_CODENAME.items()):
+        one_of.append(v)
+        one_of.append(c)
+        if i > 1:
+            break
+    one_of.append("...")
+
+    _validate_ubuntu = validate_options(
+        tuple(VERISON_TO_CODENAME.keys()) + tuple(VERISON_TO_CODENAME.values()),
+        one_of=tuple(one_of),
+        mapping={v: k for k, v in VERISON_TO_CODENAME.items()},
+        all="all",
+    )
 
     parser.register("type", "ubuntu", _validate_ubuntu)
 
@@ -180,20 +289,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
-    def _validate_component(value: str) -> list[str]:
-        if value == "all":
-            return ["main", "restricted", "universe", "multiverse"]
-        values = value.split("|")
-        for v in values:
-            if v not in ("main", "restricted", "universe", "multiverse"):
-                raise argparse.ArgumentTypeError(
-                    f"Invalid component: {v}. Must be one of 'main', 'restricted', 'universe', or 'multiverse'."
-                )
-        if len(values) < 1:
-            raise argparse.ArgumentTypeError("At least one component must be specified.")
-        return values
-
-    parser.register("type", "component", _validate_component)
+    parser.register(
+        "type",
+        "component",
+        validate_options(
+            ("main", "restricted", "universe", "multiverse"),
+            one_of=("[M]ain", "[R]estricted", "[U]niverse", "mu[L]tiverse"),
+            mapping={"m": "main", "r": "restricted", "u": "universe", "l": "multiverse"},
+            all="all",
+        ),
+    )
 
     parser.add_argument(
         "--component",
@@ -206,20 +311,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
-    def _validate_repos(value: str) -> list[str]:
-        if value == "all":
-            return ["main", "security", "updates", "backports"]
-        values = value.split("|")
-        for v in values:
-            if v not in ("main", "security", "updates", "backports"):
-                raise argparse.ArgumentTypeError(
-                    f"Invalid repo: {v}. Must be one of '', 'security', 'updates', or 'backports'."
-                )
-        if len(values) < 1:
-            raise argparse.ArgumentTypeError("At least one repo must be specified.")
-        return values
-
-    parser.register("type", "repos", _validate_repos)
+    parser.register(
+        "type",
+        "repos",
+        validate_options(
+            ("main", "security", "updates", "backports"),
+            one_of=("[M]ain", "[S]ecurity", "[U]pdates", "[B]ackports"),
+            mapping={"m": "main", "s": "security", "u": "updates", "b": "backports"},
+            all="all",
+        ),
+    )
 
     parser.add_argument(
         "--repos",
@@ -242,7 +343,7 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
-    if os.getenv("MULTI_APT_CACHE_DIR", None) is not None and "--cache-dir" not in " ".join(os.sys.argv):
+    if os.getenv("MULTI_APT_CACHE_DIR", None) is not None and "--cache-dir" not in " ".join(sys.argv):
         parser.set_defaults(cache_dir=os.getenv("MULTI_APT_CACHE_DIR", None))
 
     parser.add_argument(
@@ -268,23 +369,21 @@ def main() -> None:
         codename = VERISON_TO_CODENAME.get(ubuntu, ubuntu)
         for component in args.component:
             for repo in args.repos:
-                if args.cache_dir and not args.refresh_cache:
-                    cache_file = os.path.join(args.cache_dir, to_cache_file(codename, component, repo))
-                    if os.path.isfile(cache_file):
-                        with open(cache_file, encoding="utf-8") as f:
-                            packages = set(line.strip() for line in f if line.strip())
-                        all_packages.update(packages)
-                        continue
-
-                packages = get_package_list(codename, component, repo)
-
-                if args.cache_dir:
-                    # NOTE: still cache even if --refresh-cache is set, just don't use the cache
-                    cache_packages_for_component(codename, component, repo, packages, args.cache_dir)
-                all_packages.update(packages)
+                all_packages.update(
+                    get_package_list(
+                        codename,
+                        component,
+                        repo,
+                        cache_dir=args.cache_dir,
+                        refresh_cache=args.refresh_cache,
+                    )
+                )
 
     print("\n".join(sorted(all_packages)))
 
 
 if __name__ == "__main__":
     main()
+
+    # package_url = f"https://archive.ubuntu.com/ubuntu/dists/jammy/main/binary-amd64/Packages.gz"
+    # code, res = geturl(package_url)
