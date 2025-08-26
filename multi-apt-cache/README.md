@@ -10,8 +10,8 @@ Use the MULTI_APT_CACHE_DIR environment variable or --cache-dir argument to cach
 
 For example:
 
-```
-MULTI_APT_CACHE_DIR=~/tmp/multi-apt-cache/ python3 ./multi-apt-cache.py --ubuntu=all --component=all
+```bash
+MULTI_APT_CACHE_DIR=~/tmp/multi-apt-cache/ python3 ./multi_apt_cache.py --jobs=-1 --ubuntu=all --component=all
 ```
 
 will display all the packages from all supported ubuntu versions and all four components.
