@@ -126,7 +126,7 @@ def _abbreviate_package_content(
 PACKAGE_RE = re.compile(r"^Package:\s*(\S+)", re.MULTILINE)
 
 
-def _abbreviatd_content_to_package_list(abbreviated_content: str) -> set[str]:
+def _abbreviated_content_to_package_list(abbreviated_content: str) -> set[str]:
     return set(PACKAGE_RE.findall(abbreviated_content))
 
 
@@ -164,7 +164,7 @@ def get_package_list(
     # Sanity check
     assert abbreviated_content is not None
 
-    return _abbreviatd_content_to_package_list(abbreviated_content)
+    return _abbreviated_content_to_package_list(abbreviated_content)
 
 
 def to_cache_file(codename: str, component: str, repo: str) -> str:
@@ -183,14 +183,14 @@ def default_version() -> str:
             for line in f:
                 if line.startswith("VERSION_ID="):
                     version = line.split("=")[1].strip().strip('"')
-                    if version in VERISON_TO_CODENAME or version in VERISON_TO_CODENAME.values():
+                    if version in VERSION_TO_CODENAME or version in VERSION_TO_CODENAME.values():
                         return version
     except Exception:
         pass
     return DEFAULT_UBUNTU_VERSION
 
 
-VERISON_TO_CODENAME = {
+VERSION_TO_CODENAME = {
     "16.04": "xenial",
     "16.10": "yakkety",
     "17.04": "zesty",
@@ -260,7 +260,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     one_of = ["all"]
-    for i, (v, c) in enumerate(VERISON_TO_CODENAME.items()):
+    for i, (v, c) in enumerate(VERSION_TO_CODENAME.items()):
         one_of.append(v)
         one_of.append(c)
         if i > 1:
@@ -268,9 +268,9 @@ def parse_args() -> argparse.Namespace:
     one_of.append("...")
 
     _validate_ubuntu = validate_options(
-        tuple(VERISON_TO_CODENAME.keys()) + tuple(VERISON_TO_CODENAME.values()),
+        tuple(VERSION_TO_CODENAME.keys()) + tuple(VERSION_TO_CODENAME.values()),
         one_of=tuple(one_of),
-        mapping={v: k for k, v in VERISON_TO_CODENAME.items()},
+        mapping={v: k for k, v in VERSION_TO_CODENAME.items()},
         all="all",
     )
 
@@ -385,7 +385,7 @@ def main() -> None:
         #       to make it easier to debug and profile.
 
         for ubuntu in args.ubuntu:
-            codename = VERISON_TO_CODENAME.get(ubuntu, ubuntu)
+            codename = VERSION_TO_CODENAME.get(ubuntu, ubuntu)
             for component in args.component:
                 for repo in args.repos:
                     all_packages.update(
@@ -404,7 +404,7 @@ def main() -> None:
         futures = []
         with ThreadPoolExecutor(max_workers=args.jobs) as executor:
             for ubuntu in args.ubuntu:
-                codename = VERISON_TO_CODENAME.get(ubuntu, ubuntu)
+                codename = VERSION_TO_CODENAME.get(ubuntu, ubuntu)
                 for component in args.component:
                     for repo in args.repos:
                         futures.append(  # noqa: PERF401
