@@ -613,6 +613,12 @@ class ContentsSorter:
                     indent = " " * key_hunks[0].indentation
                     print(f"{indent}{k}:")
 
+                # Find the first difference and log it
+                for i, (k1, k2) in enumerate(zip(keys, sorted_keys)):
+                    if k1 != k2:
+                        logging.info(f"First difference at position {i}: '{k1}' should be '{k2}'")
+                        break
+
     def process(self) -> str:
         self._process()
         return self.contents
