@@ -260,7 +260,7 @@ wheels = [
 
 [[package]]
 name = "slice-sorter"
-version = "0.0.1"
+version = "0.0.0"
 source = { virtual = "." }
 dependencies = [
     { name = "oyaml" },

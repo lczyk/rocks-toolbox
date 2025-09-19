@@ -61,9 +61,9 @@ lint.ignore = [
     # "PERF203", # try-except within the loop body
     # "E731",    # do not assign a lambda expression
     # "PLR0915", # too many statements
-    # "PLR0912", # too many branches
+    "PLR0912", # too many branches
+    "PLR0911", # too many return statements
     # "SIM105",
-    # "PLR0911", # too many return statements
     # "PLR0913", # too many arguments in function definition
     #
 ]
