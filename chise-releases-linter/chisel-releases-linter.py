@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Script to sort slices in SDF files.
+Script to lint chisel-releases repo
 """
 # spell-checker: ignore Marcin Konowalczyk lczyk
 # spell-checker: words levelname

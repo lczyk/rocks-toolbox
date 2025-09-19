@@ -1,6 +1,6 @@
-# slice_sorter
+# chisel-releases-linter
 
-Script to sort all the entries in SDF files
+Script to lint [`chisel-releases`](https://https://github.com/canonical/chisel-releases/) repo.
 
 Tested in Python 3.9+.
 
