@@ -928,6 +928,7 @@ def test_all_files(directory: Path) -> None:
     skip_prefixes = (
         ".git",
         "tests/tmp",
+        "rootfs",
     )
 
     for file in all_files:
