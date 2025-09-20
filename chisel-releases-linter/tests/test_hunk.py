@@ -1,22 +1,9 @@
 # spellchecker: words subkey
 
-import textwrap
-
 import pytest
+from helpers import h, p, inline_yaml
 
-from src.chisel_releases_linter import Hunk, parse_yaml_to_hunks
-
-
-def inline_yaml(yaml_str: str, indent:int = 0) -> str:
-    yaml_str = textwrap.dedent(yaml_str)
-    # remove leading/trailing newlines
-    yaml_str = yaml_str.strip("\n")
-    # make sure it ends with a newline
-    yaml_str += "\n"
-    # Add indentation if needed
-    if indent > 0:
-        yaml_str = textwrap.indent(yaml_str, " " * indent)
-    return yaml_str
+from src.chisel_releases_linter import Hunk
 
 
 def test_hunk_basic() -> None:
@@ -25,7 +12,6 @@ def test_hunk_basic() -> None:
     assert hunk.end_line == 3
     assert hunk.lines == ["line1", "line2", "line3"]
     assert hunk.indent == 0
-    assert hunk.contents == "line1\nline2\nline3\n"
 
 
 def test_hunk_with_indentation() -> None:
@@ -34,7 +20,6 @@ def test_hunk_with_indentation() -> None:
     assert hunk.end_line == 3
     assert hunk.lines == ["  line1", "  line2", "  line3"]
     assert hunk.indent == 2
-    assert hunk.contents == "line1\nline2\nline3\n"
 
 
 def test_hunk_mixed_indentation() -> None:
@@ -43,25 +28,45 @@ def test_hunk_mixed_indentation() -> None:
     assert hunk.end_line == 3
     assert hunk.lines == [" line1", "  line2", "   line3"]
     assert hunk.indent == 1
-    assert hunk.contents == "line1\n line2\n  line3\n"
 
 
 def test_hunk_wrong_indentation() -> None:
     with pytest.raises(ValueError):
-        Hunk(lines=["  line1", "line2", "line3"])
+        h("""
+        line1
+       line2
+      line3
+      """)
+
+    # Cannot go back to the original indentation level once it has increased
+    with pytest.raises(ValueError):
+        h(
+            """
+          key:
+            subkey1: value
+            subkey2: value
+          key2: value
+          """,
+        )
+
+    # But this is fine
+    _ = h(
+        """
+        # a
+        # b
+        key:
+          subkey1: value
+          subkey2: value
+        """,
+    )
+
+
+# with pytest.raises(ValueError):
 
 
 def test_hunk_empty() -> None:
     with pytest.raises(ValueError):
         Hunk(lines=[])
-
-
-def p(s: str, indent: int = 0) -> list[Hunk]:
-    return parse_yaml_to_hunks(inline_yaml(s, indent=indent))
-
-
-def h(s: str, start_line: int = 1, indent: int = 0) -> Hunk:
-    return Hunk.from_string(inline_yaml(s, indent=indent), start_line=start_line)
 
 
 def test_parse_yaml_to_hunks_basic() -> None:
@@ -79,7 +84,8 @@ def test_parse_yaml_to_hunks_basic() -> None:
           - item1
           - item2
         """),
-        h("""
+        h(
+            """
         key2:
           subkey1: value1
           subkey2: value2
@@ -106,7 +112,8 @@ def test_parse_yaml_to_hunks_with_comments() -> None:
           subkey1: value1
           subkey2: value2
         """) == [
-        h("""
+        h(
+            """
         # multiline
         # comment
         key1:
@@ -133,6 +140,7 @@ def test_parse_yaml_to_hunks_with_comments() -> None:
             start_line=10,
         ),
     ]
+
 
 def test_parse_yaml_to_hunks_comment_merging() -> None:
     # Two consecutive comments with the same indent parse as a single hunk
@@ -164,6 +172,19 @@ def test_parse_yaml_to_hunks_comment_merging() -> None:
       # comment 1
     # comment 2
     """) == [h("# comment 1", 1, 2), h("# comment 2", 2, 0)]
+
+    assert p("""
+    # this
+    # comment spans
+    # 3 lines
+    """) == [
+        h("""
+    # this
+    # comment spans
+    # 3 lines
+    """)
+    ]
+
 
 def test_parse_yaml_to_hunks_comment_merging_with_following_hunk() -> None:
     # A comment followed by a hunk with the same indentation and no blank line between them
@@ -199,11 +220,14 @@ def test_parse_yaml_to_hunks_comment_merging_with_following_hunk() -> None:
         h("key: value", 3, 0),
     ]
 
-    assert p("""
+    assert p(
+        """
     # comment 1
 
     key: value
-    """, indent=2) == [
+    """,
+        indent=2,
+    ) == [
         h("# comment 1", 1, 2),
         h("key: value", 3, 2),
     ]
