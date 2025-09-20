@@ -9,7 +9,7 @@ from conftest import __project_root__
 
 def call(*args: str) -> tuple[str, int]:
     PYTHON = sys.executable
-    cmd: list[str] = [PYTHON, str(__project_root__ / "chisel_releases_linter.py"), *args]
+    cmd: list[str] = [PYTHON, str(__project_root__ / "src" / "chisel_releases_linter.py"), *args]
     output = sub.run(cmd, check=False, capture_output=True, text=True)
     res = output.stdout.strip()
     code = output.returncode
@@ -24,7 +24,7 @@ def test_help() -> None:
 
 def test_version() -> None:
     try:
-        from chisel_releases_linter import __version__
+        from src.chisel_releases_linter import __version__
     except ImportError:
         pytest.fail("Could not import __version__ from chisel_releases_linter", pytrace=False)
     result, code = call("--version")

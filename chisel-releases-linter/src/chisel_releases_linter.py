@@ -34,29 +34,40 @@ def sort_by_bytes(slices: list[str]) -> list[str]:
 
 @dataclass(frozen=True)
 class Hunk:
-    """Represents a key in yaml, and its associated lines."""
+    """Hunk is a contiguous block of lines in a yaml file, starting at start_line
+    and ending at end_line (inclusive). It must not start or end with an empty line.
+    All the lines must have the same, or greater, indentation."""
 
-    start_line: int = field()
     lines: list[str] = field(repr=False)
+    start_line: int = 1
 
     def __post_init__(self) -> None:
+        # We check a bunch of invariants here
         if not self.lines:
             raise ValueError("Hunk must have at least one line.")
 
-        # Make sure the hunk does not end with any empty lines
-        for i in range(len(self.lines) - 1, -1, -1):
-            line = self.lines[i]
-            if line.strip():
-                break
-        else:
-            raise ValueError("Hunk cannot be empty or only whitespace.")
+        # Make sure the hunk does not start or end with empty lines
+        if not self.lines[0].strip():
+            raise ValueError("Hunk cannot start with an empty line.")
+        if not self.lines[-1].strip():
+            print(self.lines)
+            raise ValueError("Hunk cannot end with an empty line.")
+
+        # Make sure that the indentation of all lines is the same or greater
+        indent = self.indent
+        for line in self.lines:
+            if len(line) - len(line.lstrip()) < indent:
+                raise ValueError("All lines in a hunk must have the same or greater indentation.")
+
+        if self.start_line <= 0:
+            raise ValueError("start_line must be > 0.")
 
     @property
     def end_line(self) -> int:
-        return self.start_line + len(self.lines)  # exclusive
+        return self.start_line + len(self.lines) - 1
 
     @property
-    def indentation(self) -> int:
+    def indent(self) -> int:
         return len(self.lines[0]) - len(self.lines[0].lstrip())
 
     @property
@@ -64,222 +75,350 @@ class Hunk:
         return "\n".join(self.lines)
 
     def __repr__(self) -> str:
-        return f"Hunk({self.start_line + 1}-{self.end_line})"
-
-
-@dataclass(frozen=True)
-class KeyHunk(Hunk):
-    """Represents a key in yaml, and its associated lines."""
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        _ = self._parse_key()
-
-    def _parse_key(self) -> tuple[str, int]:
-        for i, line in enumerate(self.lines):
-            key = self.parse_key(line)
-            if key is not None:
-                object.__setattr__(self, "_key", key)
-                object.__setattr__(self, "_key_line_index", i)
-                break
-        else:
-            raise ValueError(f"No key found in hunk: {self.lines!r}")
-        return key, i
-
-    @staticmethod
-    def parse_key(line: str) -> str | None:
-        """Return the key of the hunk if the line starts a hunk, else None."""
-        stripped = line.lstrip()
-        if not stripped or stripped.startswith("#"):
-            return None
-        if ":" not in stripped:
-            return None
-        key = stripped.split(":", 1)[0].rstrip()
-        return key if key else None
+        return f"Hunk({self.start_line}-{self.end_line}, indent={self.indent})"
 
     @property
-    def key(self) -> str:
-        key = getattr(self, "_key", None)
-        if key is None:
-            key, _ = self._parse_key()
-        return key
+    def contents(self) -> str:
+        # return "\n".join(self.lines) + "\n"
+        lines_noindent = [line[self.indent :] for line in self.lines]
+        return "\n".join(lines_noindent) + "\n"
 
-    @property
-    def key_line_index(self) -> int:
-        key_index = getattr(self, "_key_line_index", None)
-        if key_index is None:
-            _, key_index = self._parse_key()
-        return key_index
-
-    def __repr__(self) -> str:
-        return f"YamlKeyHunk({self.key}, {self.start_line + 1}-{self.end_line})"
-
-    @property
-    def content_lines(self) -> list[str]:
-        """Return the lines of the hunk, excluding the key line."""
-        return self.lines[self.key_line_index + 1 :]
-
-    @property
-    def content(self) -> str:
-        """Return the content of the hunk as a single string, excluding the key line."""
-        return "\n".join(self.content_lines)
+    @classmethod
+    def from_string(cls, contents: str, start_line: int = 1) -> Hunk:
+        lines = contents.splitlines()
+        return cls(lines=lines, start_line=start_line)
 
 
-@dataclass(frozen=True)
-class ListItemHunk(Hunk):
-    """Represents a list item in yaml, and its associated lines."""
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        _ = self._parse_item()
-
-    def _parse_item(self) -> str:
-        for line in self.lines:
-            item = self.parse_item(line)
-            if item is not None:
-                object.__setattr__(self, "_item", item)
-                break
-        else:
-            raise ValueError(f"No list item found in hunk: {self.lines!r}")
-        return item
-
-    @staticmethod
-    def parse_item(line: str) -> str | None:
-        """Return True if the line starts a list item, else False."""
-        stripped = line.lstrip()
-        if not stripped.startswith("- "):
-            return None
-        stripped = stripped[2:]  # remove the "- "
-        # it may have a comment at the end
-        if "#" in stripped:
-            stripped = stripped.split("#", 1)[0].rstrip()
-        return stripped if stripped else None
-
-    @property
-    def item(self) -> str:
-        item = getattr(self, "_item", None)
-        if item is None:
-            item = self._parse_item()
-        return item
-
-    def __repr__(self) -> str:
-        return f"ListItemHunk({self.start_line + 1}-{self.end_line})"
-
-
-def parse_yaml_hunks(
-    contents: str,
-    start_func: Callable[[str], bool],
-    stop_func: Callable[[str, str], bool],
+def parse_yaml_to_hunks(
+    contents: str | list[str],
 ) -> list[Hunk]:
-    """General function to parse yaml hunks based on start and stop functions."""
-    lines = contents.splitlines()
+    """Parse the contents of a yaml file into hunks."""
+    lines = contents.splitlines() if isinstance(contents, str) else contents
     hunks: list[Hunk] = []
+    if not lines:
+        return hunks
 
+    _comment_start = "#"
+
+    # Parse the lines into hunks
+    # For now parse any comment lines as one-line hunks
     i = 0
     while i < len(lines):
         line = lines[i]
-        # stripped = line.lstrip()
-        # if stripped.startswith(f"{key}:"):
-        if start_func(line):
-            # start of a hunk
-            start_line = i
-            hunk_lines = [line]
+        stripped = line.lstrip()
+        if not stripped:
             i += 1
-            # collect all lines that are indented more than the key line
-            # start_indentation = len(line) - len(stripped)
-            while i < len(lines):
-                next_line = lines[i]
-                # next_stripped = next_line.lstrip()
-                # next_indentation = len(next_line) - len(next_stripped)
-                if stop_func(line, next_line):
-                    break
-                else:
-                    # if next_indentation > start_indentation or not next_stripped:
-                    hunk_lines.append(next_line)
-                    i += 1
-                # else:
-                #     break
-            hunks.append(Hunk(lines=hunk_lines, start_line=start_line))
-        else:
-            i += 1
+            continue
+        # start of a hunk
+        start_line = i
+        hunk_lines = [line]
+        i += 1
+        if stripped.startswith(_comment_start):
+            # comment line, hunk is just this line
+            hunks.append(Hunk(lines=hunk_lines, start_line=start_line + 1))
+            continue
+        # collect all lines that are indented as much as, or more than, the first line
+        start_indentation = len(line) - len(stripped)
+        while i < len(lines):
+            next_line = lines[i]
+            next_stripped = next_line.lstrip()
+            next_indentation = len(next_line) - len(next_stripped)
+            if next_indentation > start_indentation or not next_stripped:
+                hunk_lines.append(next_line)
+                i += 1
+            else:
+                break
 
-    # Go through all the hunks and remove any trailing empty lines
-    for idx, hunk in enumerate(hunks):
-        lines = hunk.lines
-        while lines and not lines[-1].strip():
-            lines.pop()
-        if not lines:
+        # walk backwards and remove any trailing empty lines
+        while hunk_lines and not hunk_lines[-1].strip():
+            hunk_lines.pop()
+            i -= 1
+        if not hunk_lines:
             raise ValueError("Hunk cannot be empty after removing trailing empty lines.")
-        hunks[idx] = replace(hunk, lines=lines)
+
+        hunks.append(Hunk(lines=hunk_lines, start_line=start_line + 1))
+
+    def is_comment(hunk: Hunk) -> bool:
+        return len(hunk.lines) >= 1 and hunk.lines[0].lstrip().startswith(_comment_start)
+
+    # Merge any consecutive comment hunks with the same indentation
+    # if there is no empty line between them
+    merged_hunks: list[Hunk] = []
+    i = 0
+    while i < len(hunks):
+        hunk = hunks[i]
+        i += 1
+        if not is_comment(hunk):
+            merged_hunks.append(hunk)
+            continue
+        # we are a comment hunk
+        assert len(hunk.lines) == 1
+        comment_lines = [hunk.lines[0]]
+        while i < len(hunks):
+            next_hunk = hunks[i]
+            if is_comment(next_hunk) and next_hunk.indent == hunk.indent and next_hunk.start_line == hunk.end_line + 1:
+                assert len(next_hunk.lines) == 1
+                comment_lines.append(next_hunk.lines[0])
+                i += 1
+            else:
+                break
+        merged_hunks.append(Hunk(lines=comment_lines, start_line=hunk.start_line))
+
+    hunks = merged_hunks
+
+    # # now merge any comment hunks with any following hunk
+    # if they have the same indentation and if there is no empty line between them
+    merged_hunks = []
+    i = 0
+    while i < len(hunks):
+        hunk = hunks[i]
+        i += 1
+        if not is_comment(hunk):
+            # just a normal hunk
+            merged_hunks.append(hunk)
+            continue
+        if i >= len(hunks):
+            # we are the last hunk, just add us
+            merged_hunks.append(hunk)
+            continue
+        # NOTE: we don't assert here that len(hunk.lines) == 1 because we may have
+        #       merged multiple comment hunks above
+        next_hunk = hunks[i]
+        if (
+            next_hunk.indent == hunk.indent
+            and next_hunk.start_line == hunk.end_line + 1
+        ):
+            # we should not be in a situation where we have two consecutive
+            # comment hunks with the same indent
+            assert not is_comment(next_hunk)
+            merged_hunks.append(
+                Hunk(
+                    lines=hunk.lines + next_hunk.lines,
+                    start_line=hunk.start_line,
+                )
+            )
+            i += 1
+        else:
+            merged_hunks.append(hunk)
+
+    hunks = merged_hunks
 
     return hunks
 
 
-def parse_yaml_hunks_for_key(contents: str, key: str) -> list[KeyHunk]:
-    """Parse the contents of a yaml file and extract hunks for the given key."""
+# @dataclass(frozen=True)
+# class KeyHunk(Hunk):
+#     """Represents a key in yaml, and its associated lines."""
 
-    def start_func(line: str) -> bool:
-        stripped = line.lstrip()
-        return stripped.startswith(f"{key}:")
+#     def __post_init__(self) -> None:
+#         super().__post_init__()
+#         _ = self._parse_key()
 
-    def stop_func(start_line: str, next_line: str) -> bool:
-        start_stripped = start_line.lstrip()
-        start_indentation = len(start_line) - len(start_stripped)
-        next_stripped = next_line.lstrip()
-        next_indentation = len(next_line) - len(next_stripped)
-        if not next_stripped:
-            return False  # empty lines are part of the hunk
-        return next_indentation <= start_indentation
+#     def _parse_key(self) -> tuple[str, int]:
+#         for i, line in enumerate(self.lines):
+#             key = self.parse_key(line)
+#             if key is not None:
+#                 object.__setattr__(self, "_key", key)
+#                 object.__setattr__(self, "_key_line_index", i)
+#                 break
+#         else:
+#             raise ValueError(f"No key found in hunk: {self.lines!r}")
+#         return key, i
 
-    hunks = parse_yaml_hunks(contents, start_func, stop_func)
+#     @staticmethod
+#     def parse_key(line: str) -> str | None:
+#         """Return the key of the hunk if the line starts a hunk, else None."""
+#         stripped = line.lstrip()
+#         if not stripped or stripped.startswith("#"):
+#             return None
+#         if ":" not in stripped:
+#             return None
+#         key = stripped.split(":", 1)[0].rstrip()
+#         return key if key else None
 
-    # Make sure the hunks are
-    return [KeyHunk(lines=h.lines, start_line=h.start_line) for h in hunks]
+#     @property
+#     def key(self) -> str:
+#         key = getattr(self, "_key", None)
+#         if key is None:
+#             key, _ = self._parse_key()
+#         return key
+
+#     @property
+#     def key_line_index(self) -> int:
+#         key_index = getattr(self, "_key_line_index", None)
+#         if key_index is None:
+#             _, key_index = self._parse_key()
+#         return key_index
+
+#     def __repr__(self) -> str:
+#         return f"YamlKeyHunk({self.key}, {self.start_line + 1}-{self.end_line})"
+
+#     @property
+#     def content_lines(self) -> list[str]:
+#         """Return the lines of the hunk, excluding the key line."""
+#         return self.lines[self.key_line_index + 1 :]
+
+#     @property
+#     def content(self) -> str:
+#         """Return the content of the hunk as a single string, excluding the key line."""
+#         return "\n".join(self.content_lines)
 
 
-# def parse_yaml_hunks_for_list_key(contents: str, key: str) -> list[YamlKeyHunk]:
-# def parse_list_items(lines: list[str]) -> list[ListItem]:
-def split_list_items_to_hunks(hunk: KeyHunk) -> list[ListItemHunk]:
-    lines = hunk.content_lines
-    hunks: list[Hunk] = []
-    item_lines: list[int] = []
+# @dataclass(frozen=True)
+# class ListItemHunk(Hunk):
+#     """Represents a list item in yaml, and its associated lines."""
 
-    for i, line in enumerate(lines):
-        stripped = line.lstrip()
-        if stripped.startswith("- "):
-            item_lines.append(i)
+#     def __post_init__(self) -> None:
+#         super().__post_init__()
+#         _ = self._parse_item()
 
-    hunks = []
-    for i, start_line in enumerate(item_lines):
-        end_line = item_lines[i + 1] if i + 1 < len(item_lines) else len(lines)
-        hunk_lines = lines[start_line:end_line]
-        hunks.append(Hunk(lines=hunk_lines, start_line=hunk.start_line + 1 + start_line))
+#     def _parse_item(self) -> str:
+#         for line in self.lines:
+#             item = self.parse_item(line)
+#             if item is not None:
+#                 object.__setattr__(self, "_item", item)
+#                 break
+#         else:
+#             raise ValueError(f"No list item found in hunk: {self.lines!r}")
+#         return item
 
-    # convert to ListItemHunk
-    return [ListItemHunk(lines=h.lines, start_line=h.start_line) for h in hunks]
+#     @staticmethod
+#     def parse_item(line: str) -> str | None:
+#         """Return True if the line starts a list item, else False."""
+#         stripped = line.lstrip()
+#         if not stripped.startswith("- "):
+#             return None
+#         stripped = stripped[2:]  # remove the "- "
+#         # it may have a comment at the end
+#         if "#" in stripped:
+#             stripped = stripped.split("#", 1)[0].rstrip()
+#         return stripped if stripped else None
+
+#     @property
+#     def item(self) -> str:
+#         item = getattr(self, "_item", None)
+#         if item is None:
+#             item = self._parse_item()
+#         return item
+
+#     def __repr__(self) -> str:
+#         return f"ListItemHunk({self.start_line + 1}-{self.end_line})"
 
 
-def split_keys_to_hunks(hunk: KeyHunk) -> list[KeyHunk]:
-    """Just like parse_yaml_hunks_for_key, but splits the content lines into hunks for each key."""
+# def parse_yaml_hunks(
+#     contents: str,
+#     start_func: Callable[[str], bool],
+#     stop_func: Callable[[str, str], bool],
+# ) -> list[Hunk]:
+#     """General function to parse yaml hunks based on start and stop functions."""
+#     lines = contents.splitlines()
+#     hunks: list[Hunk] = []
 
-    def start_func(line: str) -> bool:
-        stripped = line.lstrip()
-        return KeyHunk.parse_key(stripped) is not None
+#     i = 0
+#     while i < len(lines):
+#         line = lines[i]
+#         # stripped = line.lstrip()
+#         # if stripped.startswith(f"{key}:"):
+#         if start_func(line):
+#             # start of a hunk
+#             start_line = i
+#             hunk_lines = [line]
+#             i += 1
+#             # collect all lines that are indented more than the key line
+#             # start_indentation = len(line) - len(stripped)
+#             while i < len(lines):
+#                 next_line = lines[i]
+#                 # next_stripped = next_line.lstrip()
+#                 # next_indentation = len(next_line) - len(next_stripped)
+#                 if stop_func(line, next_line):
+#                     break
+#                 else:
+#                     # if next_indentation > start_indentation or not next_stripped:
+#                     hunk_lines.append(next_line)
+#                     i += 1
+#                 # else:
+#                 #     break
+#             hunks.append(Hunk(lines=hunk_lines, start_line=start_line))
+#         else:
+#             i += 1
 
-    def stop_func(start_line: str, next_line: str) -> bool:
-        start_stripped = start_line.lstrip()
-        start_indentation = len(start_line) - len(start_stripped)
-        next_stripped = next_line.lstrip()
-        next_indentation = len(next_line) - len(next_stripped)
-        if not next_stripped:
-            return False  # empty lines are part of the hunk
-        return next_indentation <= start_indentation
+#     # Go through all the hunks and remove any trailing empty lines
+#     for idx, hunk in enumerate(hunks):
+#         lines = hunk.lines
+#         while lines and not lines[-1].strip():
+#             lines.pop()
+#         if not lines:
+#             raise ValueError("Hunk cannot be empty after removing trailing empty lines.")
+#         hunks[idx] = replace(hunk, lines=lines)
 
-    _hunks = parse_yaml_hunks(hunk.content, start_func, stop_func)
-    hunks = [KeyHunk(lines=h.lines, start_line=hunk.start_line + 1 + h.start_line) for h in _hunks]
-    # make sure the hunks are contiguous ...
+#     return hunks
 
-    return hunks
+
+# def parse_yaml_hunks_for_key(contents: str, key: str) -> list[KeyHunk]:
+#     """Parse the contents of a yaml file and extract hunks for the given key."""
+
+#     def start_func(line: str) -> bool:
+#         stripped = line.lstrip()
+#         return stripped.startswith(f"{key}:")
+
+#     def stop_func(start_line: str, next_line: str) -> bool:
+#         start_stripped = start_line.lstrip()
+#         start_indentation = len(start_line) - len(start_stripped)
+#         next_stripped = next_line.lstrip()
+#         next_indentation = len(next_line) - len(next_stripped)
+#         if not next_stripped:
+#             return False  # empty lines are part of the hunk
+#         return next_indentation <= start_indentation
+
+#     hunks = parse_yaml_hunks(contents, start_func, stop_func)
+
+#     # Make sure the hunks are
+#     return [KeyHunk(lines=h.lines, start_line=h.start_line) for h in hunks]
+
+
+# # def parse_yaml_hunks_for_list_key(contents: str, key: str) -> list[YamlKeyHunk]:
+# # def parse_list_items(lines: list[str]) -> list[ListItem]:
+# def split_list_items_to_hunks(hunk: KeyHunk) -> list[ListItemHunk]:
+#     lines = hunk.content_lines
+#     hunks: list[Hunk] = []
+#     item_lines: list[int] = []
+
+#     for i, line in enumerate(lines):
+#         stripped = line.lstrip()
+#         if stripped.startswith("- "):
+#             item_lines.append(i)
+
+#     hunks = []
+#     for i, start_line in enumerate(item_lines):
+#         end_line = item_lines[i + 1] if i + 1 < len(item_lines) else len(lines)
+#         hunk_lines = lines[start_line:end_line]
+#         hunks.append(Hunk(lines=hunk_lines, start_line=hunk.start_line + 1 + start_line))
+
+#     # convert to ListItemHunk
+#     return [ListItemHunk(lines=h.lines, start_line=h.start_line) for h in hunks]
+
+
+# def split_keys_to_hunks(hunk: KeyHunk) -> list[KeyHunk]:
+#     """Just like parse_yaml_hunks_for_key, but splits the content lines into hunks for each key."""
+
+#     def start_func(line: str) -> bool:
+#         stripped = line.lstrip()
+#         return KeyHunk.parse_key(stripped) is not None
+
+#     def stop_func(start_line: str, next_line: str) -> bool:
+#         start_stripped = start_line.lstrip()
+#         start_indentation = len(start_line) - len(start_stripped)
+#         next_stripped = next_line.lstrip()
+#         next_indentation = len(next_line) - len(next_stripped)
+#         if not next_stripped:
+#             return False  # empty lines are part of the hunk
+#         return next_indentation <= start_indentation
+
+#     _hunks = parse_yaml_hunks(hunk.content, start_func, stop_func)
+#     hunks = [KeyHunk(lines=h.lines, start_line=hunk.start_line + 1 + h.start_line) for h in _hunks]
+#     # make sure the hunks are contiguous ...
+
+#     return hunks
 
 
 class Stage(Protocol):
@@ -537,8 +676,10 @@ class SliceKeysOrder(Stage):
         self._process()
         return self.contents
 
+
 if TYPE_CHECKING:
     _slice_keys_order: Stage = SliceKeysOrder.__new__(SliceKeysOrder)
+
 
 class NoGapBetweenSlicesKeyAndContents(Stage):
     def __init__(self, contents: str, *, filename: str) -> None:
@@ -584,8 +725,11 @@ class NoGapBetweenSlicesKeyAndContents(Stage):
         self._process()
         return self.contents
 
+
 if TYPE_CHECKING:
-    _no_gap_between_slices_key_and_contents: Stage = NoGapBetweenSlicesKeyAndContents.__new__(NoGapBetweenSlicesKeyAndContents)
+    _no_gap_between_slices_key_and_contents: Stage = NoGapBetweenSlicesKeyAndContents.__new__(
+        NoGapBetweenSlicesKeyAndContents
+    )
 
 
 class FilesHaveNewlineAtEnd(Stage):
@@ -627,11 +771,12 @@ class FilesHaveNewlineAtEnd(Stage):
         self._process()
         return self.contents
 
+
 if TYPE_CHECKING:
     _files_have_newline_st_end: Stage = FilesHaveNewlineAtEnd.__new__(FilesHaveNewlineAtEnd)
 
-def test_all_slices(directory: Path) -> None:
 
+def test_all_slices(directory: Path) -> None:
     slices_dir = directory / "slices"
     if not slices_dir.is_dir():
         raise FileNotFoundError(f"'slices' directory not found in {directory}")
@@ -666,8 +811,8 @@ def test_all_slices(directory: Path) -> None:
             stage = stage_cls(contents, filename=str(relative_path))
             contents = stage.process()
 
-def test_all_test_files(directory: Path) -> None:
 
+def test_all_test_files(directory: Path) -> None:
     tests_dir = args.directory / "tests" / "spread" / "integration"
     if not tests_dir.is_dir():
         raise FileNotFoundError(f"'tests' directory not found in {args.directory}")
@@ -675,8 +820,8 @@ def test_all_test_files(directory: Path) -> None:
     # get all the .sh files in the tests directory and its subdirectories
     _bash_scripts = list(tests_dir.rglob("**/*.sh"))
 
-def test_all_files(directory: Path) -> None:
 
+def test_all_files(directory: Path) -> None:
     all_files = list(directory.rglob("**/*"))
     all_files = [f for f in all_files if f.is_file()]
 
@@ -709,6 +854,7 @@ def test_all_files(directory: Path) -> None:
         for stage_cls in stages:
             stage = stage_cls(contents, filename=str(relative_path))
             contents = stage.process()
+
 
 ## MAIN ########################################################################
 
