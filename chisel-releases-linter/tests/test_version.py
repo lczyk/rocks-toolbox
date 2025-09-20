@@ -18,7 +18,7 @@ def get_version_from_pyproject(file: Path) -> Version:
 
 
 def test_version_matches_between_main_and_pyproject() -> None:
-    from slice_sorter import __version__
+    from chisel_releases_linter import __version__
 
     main_version = Version(__version__)
 
@@ -32,7 +32,7 @@ def test_version_matches_between_main_and_pyproject() -> None:
 
 
 def test_version_in_changelog_matches_main() -> None:
-    from slice_sorter import __changelog__, __version__
+    from chisel_releases_linter import __changelog__, __version__
 
     main_version = Version(__version__)
 
@@ -48,7 +48,7 @@ def test_version_in_changelog_matches_main() -> None:
 
 
 def test_changelog_is_sorted() -> None:
-    from slice_sorter import __changelog__
+    from chisel_releases_linter import __changelog__
 
     assert len(__changelog__) > 0, "__changelog__ is empty."
 

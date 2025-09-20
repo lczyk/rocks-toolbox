@@ -15,10 +15,11 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Protocol
 
-__version__ = "0.0.0"
+__version__ = "0.0.1"
 __author__ = "Marcin Konowalczyk"
 
 __changelog__ = [
+    ("0.0.1", "hunk implementation", "@lczyk"),
     ("0.0.0", "boilerplate", "@lczyk"),
 ]
 
