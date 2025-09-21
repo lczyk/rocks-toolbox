@@ -1,7 +1,7 @@
 # spellchecker: words subkey
 
 import pytest
-from helpers import h, p, inline_yaml
+from helpers import h, p
 
 from src.chisel_releases_linter import Hunk
 
