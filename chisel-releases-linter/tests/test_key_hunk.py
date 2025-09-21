@@ -34,11 +34,13 @@ def test_key_hunk_parse_key() -> None:
 
 
 def test_key_hunk_basic() -> None:
-    hunk = kh("""
-    key1: value1
-      subkey1: value2
-      subkey2: value3
-    """)
+    hunk = kh(
+        """
+        key1: value1
+          subkey1: value2
+          subkey2: value3
+        """
+    )
     assert hunk.key == "key1"
     assert hunk.lines == [
         "key1: value1",
@@ -49,69 +51,67 @@ def test_key_hunk_basic() -> None:
 
 def test_key_hunk_invalid() -> None:
     with pytest.raises(ValueError):
+        kh("# comment")
+
+    with pytest.raises(ValueError):
         kh(
             """
-        # comment
-        """,
+            - item in list
+            - another item
+            """,
         )
 
     with pytest.raises(ValueError):
         kh(
             """
-          - item in list
-          - another item
-        """,
-        )
-
-    with pytest.raises(ValueError):
-        kh(
-            """
-          - key: value in list
-          - another item
-        """,
+            - key: value in list
+            - another item
+            """,
         )
 
     # key must be in the first non-indented lines
     with pytest.raises(ValueError):
         kh(
             """
-          # comment line
-          # another comment
-          - not a key
-            key: value
-        """,
+            # comment line
+            # another comment
+            - not a key
+                key: value
+            """,
         )
 
 
 def test_find_yaml_hunks_for_key() -> None:
     results = find_yaml_hunks_for_key(
-        inline_yaml("""
-    key1:
-        subkey1: value
-        subkey2: value
-    key2:
-        subkey1: value
-        subkey2: value
-    key1:
-        subkey1: value
-        subkey2: value
-    """),
+        inline_yaml(
+            """
+            key1:
+                subkey1: value
+                subkey2: value
+            key2:
+                subkey1: value
+                subkey2: value
+            key1:
+                subkey1: value
+                subkey2: value
+            """
+        ),
         "key1",
     )
     assert len(results) == 2
     assert results[0] == kh(
         """
-    key1:
-        subkey1: value
-        subkey2: value
-    """,
+        key1:
+            subkey1: value
+            subkey2: value
+        """,
     )
     assert results[1] == kh(
         """
-    key1:
-        subkey1: value
-        subkey2: value
-    """,
+        key1:
+            subkey1: value
+            subkey2: value
+        """,
         start_line=7,
     )
 

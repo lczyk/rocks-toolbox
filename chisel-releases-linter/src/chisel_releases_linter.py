@@ -400,14 +400,23 @@ class ItemHunk(Hunk):
             return f"ItemHunk({self.start_line}-{self.end_line}, indent={self.indent}, item={self.item!r})"
 
 
+class CommentHunk(Hunk):
+    """Represents a comment hunk in yaml."""
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if not all(line.lstrip().startswith(COMMENT) or not line.strip() for line in self.lines):
+            raise ValueError("CommentHunk must only contain comment lines or empty lines.")
+
+
 def parse_list_items(
     contents: str | list[str],
     start_line: int = 1,
-) -> tuple[list[ItemHunk], list[Hunk]]:
+) -> tuple[list[ItemHunk], list[CommentHunk]]:
     """Parse lines into list items hunks."""
     lines = contents.splitlines() if isinstance(contents, str) else contents
     item_hunks: list[ItemHunk] = []
-    comment_hunks: list[Hunk] = []
+    comment_hunks: list[CommentHunk] = []
     if not lines:
         return item_hunks, comment_hunks
     parsed_hunks = parse_yaml_to_hunks(lines)
@@ -415,11 +424,13 @@ def parse_list_items(
         try:
             ih = ItemHunk(lines=hunk.lines, start_line=hunk.start_line)
             item_hunks.append(ih)
-        except ValueError:  # noqa: PERF203
-            if all(line.lstrip().startswith(COMMENT) or not line.strip() for line in hunk.lines):
-                comment_hunks.append(hunk)
-            else:
-                raise
+        except ValueError as ve:  # noqa: PERF203
+            try:
+                ch = CommentHunk(lines=hunk.lines, start_line=hunk.start_line)
+                comment_hunks.append(ch)
+            except ValueError:
+                # not a comment hunk. re-raise the original exception
+                raise ve from None
 
     # Adjust the start_line of the hunks
     for i, hunk in enumerate(item_hunks):
@@ -431,11 +442,11 @@ def parse_list_items(
     return item_hunks, comment_hunks
 
 
-def parse_key_children(contents: str | list[str], start_line: int = 1) -> tuple[list[KeyHunk], list[Hunk]]:
+def parse_key_children(contents: str | list[str], start_line: int = 1) -> tuple[list[KeyHunk], list[CommentHunk]]:
     """Parse lines into key hunks."""
     lines = contents.splitlines() if isinstance(contents, str) else contents
     key_hunks: list[KeyHunk] = []
-    comment_hunks: list[Hunk] = []
+    comment_hunks: list[CommentHunk] = []
     if not lines:
         return key_hunks, comment_hunks
     parsed_hunks = parse_yaml_to_hunks(lines)
@@ -443,12 +454,13 @@ def parse_key_children(contents: str | list[str], start_line: int = 1) -> tuple[
         try:
             kh = KeyHunk(lines=hunk.lines, start_line=hunk.start_line)
             key_hunks.append(kh)
-        except ValueError:  # noqa: PERF203
-            # might be a comment hunk
-            if all(line.lstrip().startswith(COMMENT) or not line.strip() for line in hunk.lines):
-                comment_hunks.append(hunk)
-            else:
-                raise
+        except ValueError as ve:  # noqa: PERF203
+            try:
+                ch = CommentHunk(lines=hunk.lines, start_line=hunk.start_line)
+                comment_hunks.append(ch)
+            except ValueError:
+                # not a comment hunk. re-raise the original exception
+                raise ve from None
 
     # Adjust the start_line of the hunks
     for i, hunk in enumerate(key_hunks):

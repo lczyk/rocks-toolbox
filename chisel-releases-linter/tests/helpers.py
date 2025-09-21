@@ -1,6 +1,6 @@
 import textwrap
 
-from src.chisel_releases_linter import Hunk, ItemHunk, KeyHunk, parse_yaml_to_hunks
+from src.chisel_releases_linter import CommentHunk, Hunk, ItemHunk, KeyHunk, parse_yaml_to_hunks
 
 
 def inline_yaml(yaml_str: str, indent: int = 0) -> str:
@@ -29,3 +29,7 @@ def kh(s: str, start_line: int = 1, indent: int = 0) -> KeyHunk:
 
 def ih(s: str, start_line: int = 1, indent: int = 0) -> ItemHunk:
     return ItemHunk.from_string(inline_yaml(s, indent=indent), start_line=start_line)
+
+
+def ch(s: str, start_line: int = 1, indent: int = 0) -> CommentHunk:
+    return CommentHunk.from_string(inline_yaml(s, indent=indent), start_line=start_line)

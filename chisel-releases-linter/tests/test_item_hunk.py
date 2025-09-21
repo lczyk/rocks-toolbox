@@ -1,7 +1,7 @@
 # spellchecker: words subkey
 
 import pytest
-from helpers import h, ih, inline_yaml
+from helpers import ch, ih, inline_yaml
 
 from src.chisel_releases_linter import ItemHunk, parse_list_items
 
@@ -184,7 +184,7 @@ def test_parse_list_items_trailing_comment() -> None:
         ih("- item2", start_line=2),
     ]
     assert comments == [
-        h(
+        ch(
             """
         # comment
         # another comment
@@ -203,7 +203,7 @@ def test_parse_list_items_no_items() -> None:
     )
     assert items == []
     assert comments == [
-        h("""
+        ch("""
         # comment
         # another comment
         """)
