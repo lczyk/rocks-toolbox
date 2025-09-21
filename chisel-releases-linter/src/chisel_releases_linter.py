@@ -21,10 +21,11 @@ if TYPE_CHECKING:
 else:
     Self = object
 
-__version__ = "0.0.2"
+__version__ = "0.0.3"
 __author__ = "Marcin Konowalczyk"
 
 __changelog__ = [
+    ("0.0.3", "add --jobs option", "@lczyk"),
     ("0.0.2", "linting notes", "@lczyk"),
     ("0.0.1", "hunk implementation", "@lczyk"),
     ("0.0.0", "boilerplate", "@lczyk"),
@@ -33,11 +34,6 @@ __changelog__ = [
 COMMENT = "#"
 
 ################################################################################
-
-
-def sort_by_bytes(slices: list[str]) -> list[str]:
-    """Sort in the same way LC_ALL=C sort works in the shell."""
-    return sorted(slices, key=lambda s: s.encode("utf-8"))
 
 
 @dataclass(frozen=True)
@@ -489,14 +485,14 @@ class LintingNote:
         result = f"{level}:"
         result = f"{result} {self.message}"
         if location is not None:
-            result = f"{result} {location}"
+            result = f"{result} -- {location}"
         return result
 
 
 class Stage(Protocol):
     notes: list[LintingNote]
 
-    def __init__(self, contents: str, *, filename: str) -> None: ...
+    def __init__(self, contents: str, *, filename: str | Path) -> None: ...
 
     def process(self) -> None: ...
 
@@ -544,10 +540,18 @@ class LintingNoteMixin:
 
 
 class StageMixin(LintingNoteMixin):
-    def __init__(self, contents: str, *, filename: str) -> None:
+    def __init__(self, contents: str, *, filename: str | Path) -> None:
         self.contents = contents
         self.filename = filename
         super().__init__()
+
+
+### STAGES ######################################################################
+
+
+def sort_by_bytes(slices: list[str]) -> list[str]:
+    """Sort in the same way LC_ALL=C sort works in the shell."""
+    return sorted(slices, key=lambda s: s.encode("utf-8"))
 
 
 class EssentialsSorter(StageMixin):
@@ -670,61 +674,46 @@ if TYPE_CHECKING:
     _contents_sorter: Stage = ContentsSorter.__new__(ContentsSorter)
 
 
-class CopyrightSliceExists(StageMixin):
-    def process(self) -> None:
-        hunks = find_yaml_hunks_for_key(self.contents, "copyright")
-        if not hunks:
-            self._issue("The 'copyright' slice is missing")
-            return
+def parse_slices_hunks(contents: str) -> tuple[KeyHunk | None, list[KeyHunk]]:
+    slices_hunks = find_yaml_hunks_for_key(contents, "slices")
+    if not slices_hunks:
+        return None, []
 
+    if len(slices_hunks) > 1:
+        return None, []
 
-if TYPE_CHECKING:
-    _copyright_slice_exists: Stage = CopyrightSliceExists.__new__(CopyrightSliceExists)
+    slices_hunk = slices_hunks[0]
+    slice_key_hunks, _ = parse_key_children(
+        slices_hunk.lines[slices_hunk.key_line_index + 1 :],
+        start_line=slices_hunk.start_line + slices_hunk.key_line_index + 1,
+    )
+
+    return slices_hunk, slice_key_hunks
 
 
 class CopyrightSliceIsLast(StageMixin):
     def process(self) -> None:
-        copyright_hunks = find_yaml_hunks_for_key(self.contents, "copyright")
-        if not copyright_hunks:
-            self._issue("The 'copyright' slice is missing")
+        _slices_hunk, slice_key_hunks = parse_slices_hunks(self.contents)
+        if not _slices_hunk:
+            self._issue("Incorrect 'slices' section (missing or multiple)")
             return
 
-        if len(copyright_hunks) > 1:
-            self._issue("Multiple 'copyright' slices found")
+        if not slice_key_hunks:
+            self._issue("The 'slices' section has no slices", start_line=_slices_hunk.start_line)
             return
 
-        copyright_hunk = copyright_hunks[0]
-
-        slices_hunks = find_yaml_hunks_for_key(self.contents, "slices")
-        if not slices_hunks:
-            self._issue("The 'slices' section is missing")
+        # Make sure there is a copyright slice
+        if not any(kh.key == "copyright" for kh in slice_key_hunks):
+            self._issue("The 'copyright' slice is missing", start_line=_slices_hunk.start_line)
             return
 
-        if len(slices_hunks) > 1:
-            self._issue("Multiple 'slices' sections found")
-            return
-
-        slices_hunk = slices_hunks[0]
-
-        slices_key_hunks, _ = parse_key_children(
-            slices_hunk.lines[slices_hunk.key_line_index + 1 :],
-            start_line=slices_hunk.start_line + slices_hunk.key_line_index + 1,
-        )
-        if not slices_key_hunks:
-            self._issue(
-                "The 'slices' section has no slices",
-                start_line=slices_hunk.start_line,
-                end_line=slices_hunk.end_line,
-            )
-            return
-
-        # the last key_hunk should be a copyright hunk
-        last_key_hunk = slices_key_hunks[-1]
-        if copyright_hunk != last_key_hunk:
+        # Make sure the last slice is the copyright slice
+        last_key_hunk = slice_key_hunks[-1]
+        if last_key_hunk.key != "copyright":
             self._issue(
                 message="'copyright' slice is not the last slice",
-                start_line=copyright_hunk.start_line,
-                end_line=copyright_hunk.end_line,
+                start_line=last_key_hunk.start_line,
+                end_line=last_key_hunk.end_line,
             )
 
 
@@ -734,20 +723,10 @@ if TYPE_CHECKING:
 
 class SliceKeysOrder(StageMixin):
     def process(self) -> None:
-        slices_hunks = find_yaml_hunks_for_key(self.contents, "slices")
-        if not slices_hunks:
-            self._issue(f"No 'slices' hunk found in '{self.filename}'")
+        _slices_hunk, slice_key_hunks = parse_slices_hunks(self.contents)
+        if not _slices_hunk:
+            self._issue("Incorrect 'slices' section (missing or multiple)")
             return
-
-        if len(slices_hunks) > 1:
-            self._issue(f"Multiple 'slices' hunks found in '{self.filename}'")
-            return
-
-        slices_hunk = slices_hunks[0]
-        slice_key_hunks, _ = parse_key_children(
-            slices_hunk.lines[slices_hunk.key_line_index + 1 :],
-            start_line=slices_hunk.start_line + slices_hunk.key_line_index + 1,
-        )
 
         for slice_hunk in slice_key_hunks:
             key_hunks, _ = parse_key_children(
@@ -795,20 +774,10 @@ if TYPE_CHECKING:
 
 class NoContentsEssentialGap(StageMixin):
     def process(self) -> None:
-        slices_hunks = find_yaml_hunks_for_key(self.contents, "slices")
-        if not slices_hunks:
-            # self._issue(f"No 'slices' hunk found in '{self.filename}'")
+        _slices_hunk, slice_key_hunks = parse_slices_hunks(self.contents)
+        if not _slices_hunk:
+            self._issue("Incorrect 'slices' section (missing or multiple)")
             return
-
-        if len(slices_hunks) > 1:
-            # self._issue(f"Multiple 'slices' hunks found in '{self.filename}'")
-            return
-
-        slices_hunk = slices_hunks[0]
-        slice_key_hunks, _ = parse_key_children(
-            slices_hunk.lines[slices_hunk.key_line_index + 1 :],
-            start_line=slices_hunk.start_line + slices_hunk.key_line_index + 1,
-        )
 
         for slice_hunk in slice_key_hunks:
             key_hunks, _ = parse_key_children(
@@ -837,20 +806,10 @@ if TYPE_CHECKING:
 
 class NoGapBetweenSlicesKeyAndContents(StageMixin):
     def process(self) -> None:
-        slices_hunks = find_yaml_hunks_for_key(self.contents, "slices")
-        if not slices_hunks:
-            # self._issue(f"No 'slices' hunk found in '{self.filename}'")
+        slices_hunk, slice_key_hunks = parse_slices_hunks(self.contents)
+        if not slices_hunk:
+            self._issue("Incorrect 'slices' section (missing or multiple)")
             return
-
-        if len(slices_hunks) > 1:
-            # self._issue(f"Multiple 'slices' hunks found in '{self.filename}'")
-            return
-
-        slices_hunk = slices_hunks[0]
-        slice_key_hunks, _ = parse_key_children(
-            slices_hunk.lines[slices_hunk.key_line_index + 1 :],
-            start_line=slices_hunk.start_line + slices_hunk.key_line_index + 1,
-        )
 
         if not slice_key_hunks:
             # self._issue("The 'slices' section has no slices", start_line=slices_hunk.start_line)
@@ -901,7 +860,31 @@ if TYPE_CHECKING:
 ## TESTS #######################################################################
 
 
-def test_all_slices(directory: Path) -> list[LintingNote]:
+def _target(filename: Path, directory: Path, stages: list[type[Stage]]) -> list[LintingNote]:
+    try:
+        contents = filename.read_text()
+    except UnicodeDecodeError:
+        # non-unicode file. must be some binary blob. skip it
+        # logging.debug(f"Skipping binary file: {filename}")
+
+        return [
+            LintingNote(
+                message="Skipping binary file",
+                issue=False,
+                filename=filename.relative_to(directory),
+            )
+        ]
+    file_notes: list[LintingNote] = []
+
+    for stage_cls in stages:
+        stage = stage_cls(contents, filename=filename)
+        stage.process()
+        file_notes.extend(stage.notes)
+
+    return file_notes
+
+
+def test_all_slices(directory: Path, jobs: int = 1) -> list[LintingNote]:
     slices_dir = directory / "slices"
     if not slices_dir.is_dir():
         raise FileNotFoundError(f"'slices' directory not found in {directory}")
@@ -917,7 +900,6 @@ def test_all_slices(directory: Path) -> list[LintingNote]:
     stages: list[type[Stage]] = [
         EssentialsSorter,
         ContentsSorter,
-        CopyrightSliceExists,
         CopyrightSliceIsLast,
         SliceKeysOrder,
         NoContentsEssentialGap,
@@ -926,25 +908,24 @@ def test_all_slices(directory: Path) -> list[LintingNote]:
 
     notes.append(LintingNote(message=f"Found {len(yaml_files)} .yaml files in {slices_dir}"))
 
-    for yaml_file in yaml_files:
-        relative_path = yaml_file.relative_to(directory)
-        # if yaml_file.name != "dpkg.yaml":
-        #     continue
-        contents = yaml_file.read_text()
+    if jobs == 1:
+        for yaml_file in yaml_files:
+            notes.extend(_target(yaml_file, directory, stages))
+    else:
+        from concurrent.futures import ProcessPoolExecutor
 
-        logging.debug(f"Processing file: {relative_path}")
-
-        for stage_cls in stages:
-            # contents = stage(contents, filename=str(yaml_file))
-            stage = stage_cls(contents, filename=str(relative_path))
-            # NOTE: for now we just blow up with an exception. Ha.
-            stage.process()
-            notes.extend(stage.notes)
+        with ProcessPoolExecutor(max_workers=jobs) as executor:
+            futures = [executor.submit(_target, yf, directory, stages) for yf in yaml_files]
+            for future in futures:
+                notes.extend(future.result())
 
     return notes
 
 
-def test_all_test_files(directory: Path) -> list[LintingNote]:
+def test_all_test_files(
+    directory: Path,
+    jobs: int = 1,
+) -> list[LintingNote]:
     tests_dir = args.directory / "tests" / "spread" / "integration"
     if not tests_dir.is_dir():
         raise FileNotFoundError(f"'tests' directory not found in {args.directory}")
@@ -955,7 +936,10 @@ def test_all_test_files(directory: Path) -> list[LintingNote]:
     return []
 
 
-def test_all_files(directory: Path) -> list[LintingNote]:
+def test_all_files(
+    directory: Path,
+    jobs: int = 1,
+) -> list[LintingNote]:
     all_files = list(directory.rglob("**/*"))
     all_files = [f for f in all_files if f.is_file()]
 
@@ -970,27 +954,29 @@ def test_all_files(directory: Path) -> list[LintingNote]:
         "rootfs",
     )
 
-    notes: list[LintingNote] = []
-
+    # Filter files to skip certain directories
+    filtered_files: list[Path] = []
     for file in all_files:
         relative_path = file.relative_to(directory)
         if any(str(relative_path).startswith(prefix) for prefix in skip_prefixes):
             logging.debug(f"Skipping file in '{skip_prefixes}': {relative_path}")
             continue
+        filtered_files.append(file)
 
-        try:
-            contents = file.read_text()
-        except UnicodeDecodeError:
-            # non-unicode file. must be some binary blob. skip it
-            logging.debug(f"Skipping binary file: {relative_path}")
-            continue
+    notes: list[LintingNote] = []
+    if jobs == 1:
+        for file in filtered_files:
+            notes.extend(_target(file, directory, stages))
+    else:
+        from concurrent.futures import ProcessPoolExecutor
 
-        logging.debug(f"Processing file: {relative_path}")
+        with ProcessPoolExecutor(max_workers=jobs) as executor:
+            futures = [executor.submit(_target, f, directory, stages) for f in filtered_files]
+            for future in futures:
+                notes.extend(future.result())
 
-        for stage_cls in stages:
-            stage = stage_cls(contents, filename=str(relative_path))
-            stage.process()
-            notes.extend(stage.notes)
+    # We will get a bunch of "Skipping binary file" notes. We don't want to show those here.
+    notes = [note for note in notes if "Skipping binary file" not in note.message]
 
     return notes
 
@@ -1015,9 +1001,9 @@ def maybe_colorize(text: str, *, no_color: bool) -> str:
 
 
 def main(args: argparse.Namespace) -> None:
-    slices_notes = test_all_slices(args.directory)
-    test_file_notes = test_all_test_files(args.directory)
-    all_files_notes = test_all_files(args.directory)
+    slices_notes = test_all_slices(args.directory, jobs=args.jobs)
+    test_file_notes = test_all_test_files(args.directory, jobs=args.jobs)
+    all_files_notes = test_all_files(args.directory, jobs=args.jobs)
 
     all_notes = slices_notes + test_file_notes + all_files_notes
 
@@ -1072,23 +1058,17 @@ def parse_args() -> argparse.Namespace:
     #     choices=["debug", "info", "warning", "error", "fatal", "critical"],
     #     help="Set the logging level (default: info).",
     # )
-    # parser.add_argument(
-    #     "--jobs",
-    #     "-j",
-    #     type=int,
-    #     default=1,  # -1 = as many as possible, 1 = no parallelism
-    #     help="Number of parallel jobs to use when fetching PR details. Default is 1 (no parallelism).",
-    # )
-    # parser.add_argument(
-    #     "--in-place",
-    #     action="store_true",
-    #     help="Modify the files in place. By default, the script only prints the changes that would be made.",
-    # )
-
+    parser.add_argument(
+        "--jobs",
+        "-j",
+        type=int,
+        default=1,  # -1 = as many as possible, 1 = no parallelism
+        help="Number of parallel jobs to use when fetching PR details. Default is 1 (no parallelism).",
+    )
     args = parser.parse_args()
-    # if args.jobs == 0 or args.jobs < -1:
-    #     parser.error("--jobs must be a positive integer or -1 for unlimited.")
-    # args.jobs = None if args.jobs == -1 else args.jobs  # None = as many as possible
+    if args.jobs == 0 or args.jobs < -1:
+        parser.error("--jobs must be a positive integer or -1 for unlimited.")
+    args.jobs = None if args.jobs == -1 else args.jobs  # None = as many as possible
     return args
 
 

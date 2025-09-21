@@ -1,7 +1,7 @@
 [project]
 name = "chisel-releases-linter"
 description = "Custom linter for the chisel-releases repository"
-version = "0.0.2"
+version = "0.0.3"
 # spellchecker: ignore Marcin Konowalczyk
 authors = [{ name = "Marcin Konowalczyk", email = "marcin.konowalczyk@canonical.com" }]
 readme = "README.md"
