@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from helpers import inline_yaml, kh
 
-from src.chisel_releases_linter import KeyHunk, parse_yaml_hunks_for_key
+from src.chisel_releases_linter import KeyHunk, find_yaml_hunks_for_key
 
 
 def test_key_hunk_parse_key() -> None:
@@ -83,8 +83,8 @@ def test_key_hunk_invalid() -> None:
         )
 
 
-def test_parse_yaml_hunks_for_key() -> None:
-    results = parse_yaml_hunks_for_key(
+def test_find_yaml_hunks_for_key() -> None:
+    results = find_yaml_hunks_for_key(
         inline_yaml("""
     key1:
         subkey1: value
@@ -120,7 +120,7 @@ def test_find_essential_keys(plucky_slices: list[Path]) -> None:
     for path in plucky_slices:
         contents = path.read_text()
         # _ = parse_yaml_to_hunks(contents)
-        results = parse_yaml_hunks_for_key(contents, "essential")
+        results = find_yaml_hunks_for_key(contents, "essential")
 
         # count how many times the word "essential:" appears in the file
         # as a poor proxy for how many essential keys should be found
@@ -138,7 +138,7 @@ def test_find_essential_keys(plucky_slices: list[Path]) -> None:
 def test_find_contents_keys(plucky_slices: list[Path]) -> None:
     for path in plucky_slices:
         contents = path.read_text()
-        results = parse_yaml_hunks_for_key(contents, "contents")
+        results = find_yaml_hunks_for_key(contents, "contents")
 
         # count how many times the word "contents:" appears in the file
         # as a poor proxy for how many contents keys should be found

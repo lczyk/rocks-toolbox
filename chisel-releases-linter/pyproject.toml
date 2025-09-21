@@ -1,7 +1,7 @@
 [project]
 name = "chisel-releases-linter"
 description = "Custom linter for the chisel-releases repository"
-version = "0.0.1"
+version = "0.0.2"
 # spellchecker: ignore Marcin Konowalczyk
 authors = [{ name = "Marcin Konowalczyk", email = "marcin.konowalczyk@canonical.com" }]
 readme = "README.md"
@@ -31,7 +31,7 @@ extra_checks = true
 local_partial_types = true
 
 files = [
-    "./*.py",
+    "./src/*.py",
     "./tests/**/*.py",
     #
 ]

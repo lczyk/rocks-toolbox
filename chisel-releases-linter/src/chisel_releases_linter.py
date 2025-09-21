@@ -91,7 +91,7 @@ class Hunk:
     def indent(self) -> int:
         if not hasattr(self, "_indent"):
             object.__setattr__(self, "_indent", self.line_indent(self.lines[0]))
-        return self._indent
+        return self._indent  # type: ignore
 
     def __repr__(self) -> str:
         if self.start_line == self.end_line:
@@ -367,7 +367,7 @@ class ItemHunk(Hunk):
                     object.__setattr__(self, "_item_line_index", i)
         if not hasattr(self, "_item"):
             raise ValueError(f"No list item found in hunk: {self.lines!r}")
-        return self._item, self._item_line_index
+        return self._item, self._item_line_index  # type: ignore
 
     @staticmethod
     def parse_item(line: str) -> str | None:
@@ -608,12 +608,7 @@ if TYPE_CHECKING:
     _essentials_sorter: Stage = EssentialsSorter.__new__(EssentialsSorter)
 
 
-class ContentsSorter(LintingNoteMixin):
-    def __init__(self, contents: str, *, filename: str) -> None:
-        self.contents = contents
-        self.filename = filename
-        super().__init__()
-
+class ContentsSorter(StageMixin):
     def process(self) -> None:
         hunks = find_yaml_hunks_for_key(self.contents, "contents")
         if not hunks:
@@ -675,12 +670,7 @@ if TYPE_CHECKING:
     _contents_sorter: Stage = ContentsSorter.__new__(ContentsSorter)
 
 
-class CopyrightSliceExists(LintingNoteMixin):
-    def __init__(self, contents: str, *, filename: str) -> None:
-        self.contents = contents
-        self.filename = filename
-        super().__init__()
-
+class CopyrightSliceExists(StageMixin):
     def process(self) -> None:
         hunks = find_yaml_hunks_for_key(self.contents, "copyright")
         if not hunks:
@@ -692,12 +682,7 @@ if TYPE_CHECKING:
     _copyright_slice_exists: Stage = CopyrightSliceExists.__new__(CopyrightSliceExists)
 
 
-class CopyrightSliceIsLast(LintingNoteMixin):
-    def __init__(self, contents: str, *, filename: str) -> None:
-        self.contents = contents
-        self.filename = filename
-        super().__init__()
-
+class CopyrightSliceIsLast(StageMixin):
     def process(self) -> None:
         copyright_hunks = find_yaml_hunks_for_key(self.contents, "copyright")
         if not copyright_hunks:
@@ -747,12 +732,7 @@ if TYPE_CHECKING:
     _copyright_slice_is_last: Stage = CopyrightSliceIsLast.__new__(CopyrightSliceIsLast)
 
 
-class SliceKeysOrder(LintingNoteMixin):
-    def __init__(self, contents: str, *, filename: str) -> None:
-        self.contents = contents
-        self.filename = filename
-        super().__init__()
-
+class SliceKeysOrder(StageMixin):
     def process(self) -> None:
         slices_hunks = find_yaml_hunks_for_key(self.contents, "slices")
         if not slices_hunks:
@@ -813,12 +793,7 @@ if TYPE_CHECKING:
     _slice_keys_order: Stage = SliceKeysOrder.__new__(SliceKeysOrder)
 
 
-class NoContentsEssentialGap(LintingNoteMixin):
-    def __init__(self, contents: str, *, filename: str) -> None:
-        self.contents = contents
-        self.filename = filename
-        super().__init__()
-
+class NoContentsEssentialGap(StageMixin):
     def process(self) -> None:
         slices_hunks = find_yaml_hunks_for_key(self.contents, "slices")
         if not slices_hunks:
@@ -860,12 +835,7 @@ if TYPE_CHECKING:
     _no_contents_essential_gap: Stage = NoContentsEssentialGap.__new__(NoContentsEssentialGap)
 
 
-class NoGapBetweenSlicesKeyAndContents(LintingNoteMixin):
-    def __init__(self, contents: str, *, filename: str) -> None:
-        self.contents = contents
-        self.filename = filename
-        super().__init__()
-
+class NoGapBetweenSlicesKeyAndContents(StageMixin):
     def process(self) -> None:
         slices_hunks = find_yaml_hunks_for_key(self.contents, "slices")
         if not slices_hunks:
@@ -901,12 +871,7 @@ if TYPE_CHECKING:
     )
 
 
-class FilesHaveNewlineAtEnd(LintingNoteMixin):
-    def __init__(self, contents: str, *, filename: str) -> None:
-        self.contents = contents
-        self.filename = filename
-        super().__init__()
-
+class FilesHaveNewlineAtEnd(StageMixin):
     def process(self) -> None:
         lines = self.contents.splitlines()
         if not lines:
@@ -931,7 +896,9 @@ class FilesHaveNewlineAtEnd(LintingNoteMixin):
 
 
 if TYPE_CHECKING:
-    _files_have_newline_st_end: Stage = FilesHaveNewlineAtEnd.__new__(FilesHaveNewlineAtEnd)
+    _files_have_newline_at_end: Stage = FilesHaveNewlineAtEnd.__new__(FilesHaveNewlineAtEnd)
+
+## TESTS #######################################################################
 
 
 def test_all_slices(directory: Path) -> list[LintingNote]:

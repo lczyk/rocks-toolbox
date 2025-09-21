@@ -51,54 +51,54 @@ def test_item_hunk_invalid() -> None:
     with pytest.raises(ValueError):
         ih(
             """
-        # comment
-        """,
+            # comment
+            """,
         )
 
     with pytest.raises(ValueError):
         ih(
             """
-          not an item
-          another line
-        """,
+            not an item
+            another line
+            """,
         )
 
     with pytest.raises(ValueError):
         ih(
             """
-          key: value
-          another line
-        """,
+            key: value
+            another line
+            """,
         )
 
     # item must be in the first non-indented lines
     with pytest.raises(ValueError):
         ih(
             """
-          # comment line
-          # another comment
-          not an item
-            - item in list
-        """,
+            # comment line
+            # another comment
+            not an item
+                - item in list
+            """,
         )
 
     # only one item per ItemHunk
     with pytest.raises(ValueError):
         ih(
             """
-          - item1
-          - item2
-        """,
+            - item1
+            - item2
+            """,
         )
 
 
 def test_parse_list_items_basic() -> None:
     assert parse_list_items(
         inline_yaml("""
-    - item1
-    - item2
-    - item3
-    """)
+        - item1
+        - item2
+        - item3
+        """)
     )[0] == [
         ih("- item1"),
         ih("- item2", start_line=2),
@@ -109,12 +109,12 @@ def test_parse_list_items_basic() -> None:
 def test_parse_list_items_with_comments() -> None:
     assert parse_list_items(
         inline_yaml("""
-    # comment
-    - item1
-    - item2
-    # another comment
-    - item3
-    """)
+        # comment
+        - item1
+        - item2
+        # another comment
+        - item3
+        """)
     )[0] == [
         ih("""
         # comment
@@ -134,14 +134,14 @@ def test_parse_list_items_with_comments() -> None:
 def test_parse_list_items_with_gaps() -> None:
     assert parse_list_items(
         inline_yaml("""
-    # comment
-    - item1
+        # comment
+        - item1
 
-    - item2
+        - item2
 
-    # another comment
-    - item3
-    """)
+        # another comment
+        - item3
+        """)
     )[0] == [
         ih("""
         # comment
@@ -161,9 +161,9 @@ def test_parse_list_items_with_gaps() -> None:
 def test_parse_list_items_with_inline_comments() -> None:
     assert parse_list_items(
         inline_yaml("""
-    - item1  # comment
-    - item2  # another comment
-    """)
+        - item1  # comment
+        - item2  # another comment
+        """)
     )[0] == [
         ih("- item1  # comment"),
         ih("- item2  # another comment", start_line=2),
@@ -171,36 +171,40 @@ def test_parse_list_items_with_inline_comments() -> None:
 
 
 def test_parse_list_items_trailing_comment() -> None:
-    items, trailing_comment = parse_list_items(
+    items, comments = parse_list_items(
         inline_yaml("""
-    - item1
-    - item2
-    # comment
-    # another comment
-    """)
+        - item1
+        - item2
+        # comment
+        # another comment
+        """)
     )
     assert items == [
         ih("- item1"),
         ih("- item2", start_line=2),
     ]
-    assert trailing_comment == h(
-        """
-    # comment
-    # another comment
-    """,
-        start_line=3,
-    )
+    assert comments == [
+        h(
+            """
+        # comment
+        # another comment
+        """,
+            start_line=3,
+        )
+    ]
 
 
 def test_parse_list_items_no_items() -> None:
-    items, trailing_comment = parse_list_items(
+    items, comments = parse_list_items(
         inline_yaml("""
-    # comment
-    # another comment
-    """)
+        # comment
+        # another comment
+        """)
     )
     assert items == []
-    assert trailing_comment == h("""
-    # comment
-    # another comment
-    """)
+    assert comments == [
+        h("""
+        # comment
+        # another comment
+        """)
+    ]
