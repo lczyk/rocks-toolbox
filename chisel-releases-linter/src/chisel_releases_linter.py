@@ -11,20 +11,22 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
-from collections import deque
 
 if TYPE_CHECKING:
     from typing_extensions import Self
 else:
     Self = object
 
-__version__ = "0.0.1"
+__version__ = "0.0.3"
 __author__ = "Marcin Konowalczyk"
 
 __changelog__ = [
+    ("0.0.3", "add --jobs option", "@lczyk"),
+    ("0.0.2", "linting notes", "@lczyk"),
     ("0.0.1", "hunk implementation", "@lczyk"),
     ("0.0.0", "boilerplate", "@lczyk"),
 ]
@@ -32,11 +34,6 @@ __changelog__ = [
 COMMENT = "#"
 
 ################################################################################
-
-
-def sort_by_bytes(slices: list[str]) -> list[str]:
-    """Sort in the same way LC_ALL=C sort works in the shell."""
-    return sorted(slices, key=lambda s: s.encode("utf-8"))
 
 
 @dataclass(frozen=True)
@@ -90,7 +87,7 @@ class Hunk:
     def indent(self) -> int:
         if not hasattr(self, "_indent"):
             object.__setattr__(self, "_indent", self.line_indent(self.lines[0]))
-        return getattr(self, "_indent")
+        return self._indent  # type: ignore
 
     def __repr__(self) -> str:
         if self.start_line == self.end_line:
@@ -322,7 +319,7 @@ class KeyHunk(Hunk):
             return f"KeyHunk({self.start_line}-{self.end_line}, indent={self.indent}, key={self.key!r})"
 
 
-def parse_yaml_hunks_for_key(contents: str, key: str) -> list[KeyHunk]:
+def find_yaml_hunks_for_key(contents: str, key: str) -> list[KeyHunk]:
     hunks = parse_yaml_to_hunks(contents)
     key_hunks = []
 
@@ -334,6 +331,7 @@ def parse_yaml_hunks_for_key(contents: str, key: str) -> list[KeyHunk]:
             if kh.key == key:
                 key_hunks.append(kh)
         except ValueError:
+            # not a key hunk
             continue
         child_hunks = hunk.get_child_hunks()
         to_process.extend(child_hunks)
@@ -344,7 +342,7 @@ def parse_yaml_hunks_for_key(contents: str, key: str) -> list[KeyHunk]:
 @dataclass(frozen=True)
 class ItemHunk(Hunk):
     """Represents a list item in yaml, and its associated lines. Note that the hunk may have
-    a comment attached before the item line."""
+    a comment attached before the item line. Only one item per ItemHunk is allowed."""
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -358,20 +356,23 @@ class ItemHunk(Hunk):
                 raise ValueError(f"No list item found in hunk: {self.lines!r}")
             item = self.parse_item(line)
             if item is not None:
-                object.__setattr__(self, "_item", item)
-                object.__setattr__(self, "_item_line_index", i)
-                break
-        else:
+                if hasattr(self, "_item"):
+                    raise ValueError(f"Multiple list items found in hunk: {self.lines!r}")
+                else:
+                    object.__setattr__(self, "_item", item)
+                    object.__setattr__(self, "_item_line_index", i)
+        if not hasattr(self, "_item"):
             raise ValueError(f"No list item found in hunk: {self.lines!r}")
-        return item, i
+        return self._item, self._item_line_index  # type: ignore
 
     @staticmethod
     def parse_item(line: str) -> str | None:
         """Return the item of the hunk if the line starts a list item, else None."""
-        stripped = line.lstrip()
-        if not stripped.startswith("- "):
+        stripped = line.strip()
+        if not stripped.startswith("-"):
             return None
-        stripped = stripped[2:]  # remove the "- "
+        stripped = stripped[1:]  # remove the "-"
+        stripped = stripped.lstrip()
         # it may have a comment at the end
         if COMMENT in stripped:
             stripped = stripped.split(COMMENT, 1)[0].rstrip()
@@ -399,376 +400,428 @@ class ItemHunk(Hunk):
             return f"ItemHunk({self.start_line}-{self.end_line}, indent={self.indent}, item={self.item!r})"
 
 
-def parse_essential_list_items(contents: str | list[str]) -> tuple[list[ItemHunk], Hunk | None]:
+def parse_list_items(
+    contents: str | list[str],
+    start_line: int = 1,
+) -> tuple[list[ItemHunk], list[Hunk]]:
     """Parse lines into list items hunks."""
     lines = contents.splitlines() if isinstance(contents, str) else contents
-    hunks: list[ItemHunk] = []
+    item_hunks: list[ItemHunk] = []
+    comment_hunks: list[Hunk] = []
     if not lines:
-        return hunks
+        return item_hunks, comment_hunks
     parsed_hunks = parse_yaml_to_hunks(lines)
-    comment_hunk: Hunk | None = None
-    for i, hunk in enumerate(parsed_hunks):
-        if i < len(parsed_hunks) - 1:
+    for hunk in parsed_hunks:
+        try:
             ih = ItemHunk(lines=hunk.lines, start_line=hunk.start_line)
-            hunks.append(ih)
-        else:
-            # last hunk.
-            # it might be just a comment hunk with no item
-            try:
-                ih = ItemHunk(lines=hunk.lines, start_line=hunk.start_line)
-                hunks.append(ih)
-            except ValueError:
-                if all(line.lstrip().startswith(COMMENT) or not line.strip() for line in hunk.lines):
-                    comment_hunk = hunk
-                else:
-                    raise
+            item_hunks.append(ih)
+        except ValueError:  # noqa: PERF203
+            if all(line.lstrip().startswith(COMMENT) or not line.strip() for line in hunk.lines):
+                comment_hunks.append(hunk)
+            else:
+                raise
 
-    return hunks, comment_hunk
+    # Adjust the start_line of the hunks
+    for i, hunk in enumerate(item_hunks):
+        item_hunks[i] = replace(hunk, start_line=start_line + hunk.start_line - 1)
 
+    for i, hunk in enumerate(comment_hunks):
+        comment_hunks[i] = replace(hunk, start_line=start_line + hunk.start_line - 1)
 
-# def _split_keys_to_hunks(hunk: KeyHunk) -> list[KeyHunk]:
-#     lines = hunk.lines[hunk.key_line_index + 1 :]
-#     hunks: list[Hunk] = []
-#     key_lines: list[int] = []
-#     for i, line in enumerate(lines):
-#         stripped = line.lstrip()
-#         if KeyHunk.parse_key(stripped) is not None:
-#             key_lines.append(i)
-#     hunks = []
-#     for i, start_line in enumerate(key_lines):
-#         end_line = key_lines[i + 1] if i + 1 < len(key_lines) else len(lines)
-#         hunk_lines = lines[start_line:end_line]
-#         hunks.append(Hunk(lines=hunk_lines, start_line=hunk.start_line + 1 + hunk.key_line_index + start_line))
-#     # convert to KeyHunk
-#     return [KeyHunk(lines=h.lines, start_line=h.start_line) for h in hunks]
+    return item_hunks, comment_hunks
 
 
-# def split_keys_to_hunks(hunk: KeyHunk) -> list[KeyHunk]:
-#     """Just like parse_yaml_hunks_for_key, but splits the content lines into hunks for each key."""
+def parse_key_children(contents: str | list[str], start_line: int = 1) -> tuple[list[KeyHunk], list[Hunk]]:
+    """Parse lines into key hunks."""
+    lines = contents.splitlines() if isinstance(contents, str) else contents
+    key_hunks: list[KeyHunk] = []
+    comment_hunks: list[Hunk] = []
+    if not lines:
+        return key_hunks, comment_hunks
+    parsed_hunks = parse_yaml_to_hunks(lines)
+    for hunk in parsed_hunks:
+        try:
+            kh = KeyHunk(lines=hunk.lines, start_line=hunk.start_line)
+            key_hunks.append(kh)
+        except ValueError:  # noqa: PERF203
+            # might be a comment hunk
+            if all(line.lstrip().startswith(COMMENT) or not line.strip() for line in hunk.lines):
+                comment_hunks.append(hunk)
+            else:
+                raise
 
-#     def start_func(line: str) -> bool:
-#         stripped = line.lstrip()
-#         return KeyHunk.parse_key(stripped) is not None
+    # Adjust the start_line of the hunks
+    for i, hunk in enumerate(key_hunks):
+        key_hunks[i] = replace(hunk, start_line=start_line + hunk.start_line - 1)
+    for i, hunk in enumerate(comment_hunks):
+        comment_hunks[i] = replace(hunk, start_line=start_line + hunk.start_line - 1)
 
-#     def stop_func(start_line: str, next_line: str) -> bool:
-#         start_stripped = start_line.lstrip()
-#         start_indentation = len(start_line) - len(start_stripped)
-#         next_stripped = next_line.lstrip()
-#         next_indentation = len(next_line) - len(next_stripped)
-#         if not next_stripped:
-#             return False  # empty lines are part of the hunk
-#         return next_indentation <= start_indentation
+    return key_hunks, comment_hunks
 
-#     _hunks = parse_yaml_hunks(hunk.content, start_func, stop_func)
-#     hunks = [KeyHunk(lines=h.lines, start_line=hunk.start_line + 1 + h.start_line) for h in _hunks]
-#     # make sure the hunks are contiguous ...
 
-#     return hunks
+@dataclass(frozen=True)
+class LintingNote:
+    message: str
+    filename: str | Path | None = None
+    start_line: int | None = None
+    end_line: int | None = None
+    hint: str = ""
+    issue: bool = False
+    issuer: str = ""
+
+    def get_location(self) -> str | None:
+        if self.filename is None:
+            return None
+        if self.start_line is None:
+            return str(self.filename)
+        if self.end_line is None or self.end_line == self.start_line:
+            return f"{self.filename}:{self.start_line}"
+        return f"{self.filename}:{self.start_line}-{self.end_line}"
+
+    def __str__(self) -> str:
+        location = self.get_location()
+        level = "ISSUE" if self.issue else "NOTE"
+        # issuer = f"[{self.issuer}] " if self.issuer else ""
+        result = f"{level}:"
+        result = f"{result} {self.message}"
+        if location is not None:
+            result = f"{result} -- {location}"
+        return result
 
 
 class Stage(Protocol):
-    def __init__(self, contents: str, *, filename: str) -> None: ...
+    notes: list[LintingNote]
 
-    def process(self) -> str: ...
+    def __init__(self, contents: str, *, filename: str | Path) -> None: ...
+
+    def process(self) -> None: ...
 
 
-class EssentialsSorter:
-    def __init__(self, contents: str, *, filename: str) -> None:
+class LintingNoteMixin:
+    notes: list[LintingNote]
+    __filename: str
+
+    def __init__(self) -> None:
+        _filename = getattr(self, "filename", None)
+        if not _filename:
+            raise ValueError("LintingNoteMixin requires 'filename' attribute to be set.")
+        self.__filename = _filename
+        self.notes = []
+
+    def _note(self, message: str, start_line: int = 1, end_line: int | None = None) -> None:
+        if end_line is None:
+            end_line = start_line
+        assert end_line >= start_line
+        self.notes.append(
+            LintingNote(
+                message=message,
+                filename=self.__filename,
+                start_line=start_line,
+                end_line=end_line,
+                issuer=self.__class__.__name__,
+            )
+        )
+
+    def _issue(self, message: str, hint: str = "", start_line: int = 1, end_line: int | None = None) -> None:
+        if end_line is None:
+            end_line = start_line
+        assert end_line >= start_line
+        self.notes.append(
+            LintingNote(
+                message=message,
+                hint=hint,
+                filename=self.__filename,
+                start_line=start_line,
+                end_line=end_line,
+                issue=True,
+                issuer=self.__class__.__name__,
+            )
+        )
+
+
+class StageMixin(LintingNoteMixin):
+    def __init__(self, contents: str, *, filename: str | Path) -> None:
         self.contents = contents
         self.filename = filename
+        super().__init__()
 
-    def _process(self) -> None:
-        hunks = parse_yaml_hunks_for_key(self.contents, "essential")
+
+### STAGES ######################################################################
+
+
+def sort_by_bytes(slices: list[str]) -> list[str]:
+    """Sort in the same way LC_ALL=C sort works in the shell."""
+    return sorted(slices, key=lambda s: s.encode("utf-8"))
+
+
+class EssentialsSorter(StageMixin):
+    def process(self) -> None:
+        hunks = find_yaml_hunks_for_key(self.contents, "essential")
         if not hunks:
-            logging.debug(f"No 'essential' hunks found in '{self.filename}'")
+            self._note("No 'essentials' hunks found")
             return
 
         for hunk in hunks:
-            item_hunks, _ = parse_essential_list_items(hunk.lines[hunk.key_line_index + 1 :])
+            item_hunks, _ = parse_list_items(
+                hunk.lines[hunk.key_line_index + 1 :],
+                start_line=hunk.start_line + hunk.key_line_index + 1,
+            )
             items = [ih.item for ih in item_hunks]
-            # unique_items = set(items)
-            # if len(items) != len(unique_items):
-            #     # print(items)
-            #     duplicate_items = [item for item in items if items.count(item) > 1]
-            #     logging.warning(
-            #         f"'essential' key at lines {hunk.start_line + 1}-{hunk.end_line} "
-            #         f"in '{self.filename}' has duplicate items: {set(duplicate_items)}"
-            #     )
-            #     continue
+            if not items:
+                self._issue(
+                    f"'essential' key at lines {hunk.start_line + 1}-{hunk.end_line} in '{self.filename}' has no items",
+                    start_line=hunk.start_line,
+                    end_line=hunk.end_line,
+                )
+                continue
+            # Check for duplicates
+            unique_items: set[str] = set()
+            duplicates: set[str] = set()
+            for item in items:
+                if item in unique_items:
+                    duplicates.add(item)
+                else:
+                    unique_items.add(item)
+            if duplicates:
+                message = "'essential' key has duplicate items"
+                if len(duplicates) == 1:
+                    hint = f"The duplicate item is: '{next(iter(duplicates))}'"
+                elif len(duplicates) <= 5:
+                    hint = "The duplicate items are: " + ", ".join(f"'{d}'" for d in duplicates)
+                else:
+                    hint = f"There are {len(duplicates)} duplicate items. The first 5 are: " + ", ".join(
+                        f"'{d}'" for d in list(duplicates)[:5]
+                    )
+                self._issue(message, hint=hint, start_line=hunk.start_line, end_line=hunk.end_line)
+                continue
             sorted_items = sort_by_bytes(items)
             if items != sorted_items:
-                logging.info(
+                message = (
                     f"'essential' key at lines {hunk.start_line + 1}-{hunk.end_line} "
-                    f"in '{self.filename}' is not sorted. Should be:"
+                    f"in '{self.filename}' is not sorted."
                 )
+                hint = "The items should be sorted in byte order (LC_ALL=C). The correct order is:"
                 for v in sorted_items:
-                    indent = " " * item_hunks[0].indentation
-                    print(f"{indent}- {v}")
-
-                # # create new hunk lines with sorted items
-                # new_hunk_lines = [hunk.lines[0]]  # key line
-                # indentation = " " * (len(hunk.lines[0]) - len(hunk.lines[0].lstrip()) + 2)  # +2 for "- "
-                # for item in sorted_items:
-                #     new_hunk_lines.append(f"{indentation}- {item}")
-                # # preserve any trailing empty lines from the original hunk
-                # for line in reversed(hunk.lines):
-                #     if not line.strip():
-                #         new_hunk_lines.append(line)
-                #     else:
-                #         break
-                # new_hunk = replace(hunk, lines=new_hunk_lines)
-
-                # # replace the hunk in contents
-                # self.contents = (
-                #     self.contents[: hunk.start_line]
-                #     + "\n".join(new_hunk.lines)
-                #     + self.contents[hunk.end_line :]
-                # )
-
-    def process(self) -> str:
-        self._process()
-        return self.contents
+                    indent = " " * item_hunks[0].indent
+                    # message += f"\n{indent}- {v}"
+                    hint += f"\n{indent}- {v}"
+                self._issue(message, hint=hint, start_line=hunk.start_line, end_line=hunk.end_line)
 
 
 if TYPE_CHECKING:
     _essentials_sorter: Stage = EssentialsSorter.__new__(EssentialsSorter)
 
 
-class ContentsSorter:
-    def __init__(self, contents: str, *, filename: str) -> None:
-        self.contents = contents
-        self.filename = filename
-
-    def _process(self) -> None:
-        hunks = parse_yaml_hunks_for_key(self.contents, "contents")
+class ContentsSorter(StageMixin):
+    def process(self) -> None:
+        hunks = find_yaml_hunks_for_key(self.contents, "contents")
         if not hunks:
-            logging.debug(f"No 'contents' hunks found in '{self.filename}'")
+            self._note("No 'contents' hunks found")
             return
         for hunk in hunks:
-            key_hunks = _split_keys_to_hunks(hunk)
+            key_hunks, _ = parse_key_children(
+                hunk.lines[hunk.key_line_index + 1 :],
+                start_line=hunk.start_line + hunk.key_line_index + 1,
+            )
+            if not key_hunks:
+                self._issue("The 'contents' key has no sub-keys", start_line=hunk.start_line, end_line=hunk.end_line)
+                continue
+
             keys = [kh.key for kh in key_hunks]
+
+            if len(keys) != len(set(keys)):
+                duplicate_keys = [key for key in keys if keys.count(key) > 1]
+                message = "'contents' has duplicate keys"
+                # construct the hint.
+                if len(duplicate_keys) == 1:
+                    hint = f"The duplicate key is: '{duplicate_keys[0]}'"
+                elif len(duplicate_keys) <= 5:
+                    hint = "The duplicate keys are: " + ", ".join(f"'{k}'" for k in set(duplicate_keys))
+                else:
+                    hint = f"There are {len(set(duplicate_keys))} duplicate keys. The first 5 are: " + ", ".join(
+                        f"'{k}'" for k in set(duplicate_keys[:5])
+                    )
+                self._issue(message, hint=hint, start_line=hunk.start_line, end_line=hunk.end_line)
+                continue
+
             sorted_keys = sort_by_bytes(keys)
             if keys != sorted_keys:
-                logging.info(
-                    f"'contents' key at lines {hunk.start_line + 1}-{hunk.end_line} "
-                    f"in '{self.filename}' is not sorted. Should be:"
-                )
-                for k in sorted_keys:
-                    indent = " " * key_hunks[0].indentation
-                    print(f"{indent}{k}:")
+                message = "'contents' is not sorted"
+                # construct the hint.
+                hint = "The keys should be sorted in byte order (LC_ALL=C)\n"
+                if len(keys) <= 10:
+                    hint += "The correct order is:\n"
+                    for k in sorted_keys:
+                        hint += f"  {k}:\n"
+                else:
+                    # Find the first difference
+                    first_diff_index = 0
+                    for i, (k1, k2) in enumerate(zip(keys, sorted_keys)):
+                        if k1 != k2:
+                            first_diff_index = i
+                            break
 
-                # Find the first difference and log it
-                for i, (k1, k2) in enumerate(zip(keys, sorted_keys)):
-                    if k1 != k2:
-                        logging.info(f"First difference at position {i}: '{k1}' should be '{k2}'")
-                        break
+                    first_diff_line_num = key_hunks[first_diff_index].start_line
+                    hint += (
+                        f"The first difference is at line {first_diff_line_num}:\n"
+                        f"  '{keys[first_diff_index]}' should be '{sorted_keys[first_diff_index]}'"
+                    )
 
-    def process(self) -> str:
-        self._process()
-        return self.contents
+                self._issue(message, hint=hint, start_line=hunk.start_line, end_line=hunk.end_line)
 
 
 if TYPE_CHECKING:
     _contents_sorter: Stage = ContentsSorter.__new__(ContentsSorter)
 
 
-class CopyrightSliceExists(Stage):
-    def __init__(self, contents: str, *, filename: str) -> None:
-        self.contents = contents
-        self.filename = filename
+def parse_slices_hunks(contents: str) -> tuple[KeyHunk | None, list[KeyHunk]]:
+    slices_hunks = find_yaml_hunks_for_key(contents, "slices")
+    if not slices_hunks:
+        return None, []
 
-    def _process(self) -> None:
-        hunks = parse_yaml_hunks_for_key(self.contents, "copyright")
-        if not hunks:
-            logging.info(f"No 'copyright' hunk found in '{self.filename}'")
+    if len(slices_hunks) > 1:
+        return None, []
+
+    slices_hunk = slices_hunks[0]
+    slice_key_hunks, _ = parse_key_children(
+        slices_hunk.lines[slices_hunk.key_line_index + 1 :],
+        start_line=slices_hunk.start_line + slices_hunk.key_line_index + 1,
+    )
+
+    return slices_hunk, slice_key_hunks
+
+
+class CopyrightSliceIsLast(StageMixin):
+    def process(self) -> None:
+        _slices_hunk, slice_key_hunks = parse_slices_hunks(self.contents)
+        if not _slices_hunk:
+            self._issue("Incorrect 'slices' section (missing or multiple)")
             return
 
-    def process(self) -> str:
-        self._process()
-        return self.contents
-
-
-if TYPE_CHECKING:
-    _copyright_slice_exists: Stage = CopyrightSliceExists.__new__(CopyrightSliceExists)
-
-
-class CopyrightSliceIsLast(Stage):
-    def __init__(self, contents: str, *, filename: str) -> None:
-        self.contents = contents
-        self.filename = filename
-
-    def _process(self) -> None:
-        copyright_hunks = parse_yaml_hunks_for_key(self.contents, "copyright")
-        if not copyright_hunks:
-            logging.debug(f"No 'copyright' hunk found in '{self.filename}'")
+        if not slice_key_hunks:
+            self._issue("The 'slices' section has no slices", start_line=_slices_hunk.start_line)
             return
 
-        if len(copyright_hunks) > 1:
-            logging.warning(f"Multiple 'copyright' hunks found in '{self.filename}'")
+        # Make sure there is a copyright slice
+        if not any(kh.key == "copyright" for kh in slice_key_hunks):
+            self._issue("The 'copyright' slice is missing", start_line=_slices_hunk.start_line)
             return
 
-        copyright_hunk = copyright_hunks[0]
-
-        slices_hunks = parse_yaml_hunks_for_key(self.contents, "slices")
-        if not slices_hunks:
-            logging.debug(f"No 'slices' hunk found in '{self.filename}'")
-            return
-
-        if len(slices_hunks) > 1:
-            logging.warning(f"Multiple 'slices' hunks found in '{self.filename}'")
-            return
-
-        slices_hunk = slices_hunks[0]
-
-        slices_key_hunks = _split_keys_to_hunks(slices_hunk)
-
-        # the last key_hunk should be a copyright hunk
-        last_key_hunk = slices_key_hunks[-1]
-        if copyright_hunk != last_key_hunk:
-            # print('---')
-            # print(self.filename)
-            # print(copyright_hunk)
-            # print(last_key_hunk)
-            logging.info(
-                f"'copyright' hunk at lines {copyright_hunk.start_line + 1}-{copyright_hunk.end_line} "
-                f"in '{self.filename}' is not the last slice. It should be after the last slice "
-                f"at lines {last_key_hunk.start_line + 1}-{last_key_hunk.end_line}."
+        # Make sure the last slice is the copyright slice
+        last_key_hunk = slice_key_hunks[-1]
+        if last_key_hunk.key != "copyright":
+            self._issue(
+                message="'copyright' slice is not the last slice",
+                start_line=last_key_hunk.start_line,
+                end_line=last_key_hunk.end_line,
             )
-
-    def process(self) -> str:
-        self._process()
-        return self.contents
 
 
 if TYPE_CHECKING:
     _copyright_slice_is_last: Stage = CopyrightSliceIsLast.__new__(CopyrightSliceIsLast)
 
 
-class SliceKeysOrder(Stage):
-    def __init__(self, contents: str, *, filename: str) -> None:
-        self.contents = contents
-        self.filename = filename
-
-    def _process(self) -> None:
-        slices_hunks = parse_yaml_hunks_for_key(self.contents, "slices")
-        if not slices_hunks:
-            logging.debug(f"No 'slices' hunk found in '{self.filename}'")
+class SliceKeysOrder(StageMixin):
+    def process(self) -> None:
+        _slices_hunk, slice_key_hunks = parse_slices_hunks(self.contents)
+        if not _slices_hunk:
+            self._issue("Incorrect 'slices' section (missing or multiple)")
             return
-
-        if len(slices_hunks) > 1:
-            logging.warning(f"Multiple 'slices' hunks found in '{self.filename}'")
-            return
-
-        slices_hunk = slices_hunks[0]
-        slice_key_hunks = _split_keys_to_hunks(slices_hunk)
 
         for slice_hunk in slice_key_hunks:
-            key_hunks = _split_keys_to_hunks(slice_hunk)
+            key_hunks, _ = parse_key_children(
+                slice_hunk.lines[slice_hunk.key_line_index + 1 :],
+                start_line=slice_hunk.start_line + slice_hunk.key_line_index + 1,
+            )
             if not key_hunks:
-                logging.warning(
-                    f"No keys found in slice at lines {slice_hunk.start_line + 1}-{slice_hunk.end_line} in '{self.filename}'"
-                )
+                self._issue("The slice has no keys", start_line=slice_hunk.start_line)
                 continue
             # we can have up to two keys: 'essential' and 'contents'
             # If both are present, 'essential' must come first
             keys = [kh.key for kh in key_hunks]
             # allowed keys in the order they should appear
             allowed_keys = ["essential", "contents", "mutate"]
-            if len(keys) > len(allowed_keys):
-                logging.warning(
-                    f"Too many keys {keys} in slice at lines "
-                    f"{slice_hunk.start_line + 1}-{slice_hunk.end_line} in '{self.filename}'. "
-                    f"Allowed keys are 'essential' and 'contents'. Got {keys}."
-                )
-                continue
-            if not all(k in allowed_keys for k in keys):
-                logging.warning(
-                    f"Unexpected keys {keys} in slice at lines "
-                    f"{slice_hunk.start_line + 1}-{slice_hunk.end_line} in '{self.filename}'. "
-                    f"Allowed keys are 'essential' and 'contents'. Got {keys}."
+            keys_set = set(keys)
+            allowed_keys_set = set(allowed_keys)
+            if not keys_set.issubset(allowed_keys_set):
+                extra_keys = keys_set - allowed_keys_set
+                hint = f"Allowed keys are: {', '.join(allowed_keys)}"
+                self._issue(
+                    f"Unexpected keys {extra_keys} in slice '{slice_hunk.key}'",
+                    hint=hint,
+                    start_line=slice_hunk.start_line,
+                    end_line=slice_hunk.end_line,
                 )
                 continue
             if keys != sorted(keys, key=lambda k: allowed_keys.index(k)):
-                logging.info(
-                    f"Keys {keys} in slice at lines "
-                    f"{slice_hunk.start_line + 1}-{slice_hunk.end_line} in '{self.filename}' "
-                    f"are not in the correct order. Should be:"
-                )
+                message = f"Keys in slice '{slice_hunk.key}' are not in the correct order"
+                hint = "The correct order is:\n"
                 for k in allowed_keys:
                     if k in keys:
-                        indent = " " * key_hunks[0].indentation
-                        print(f"{indent}{k}:")
-
-            # There should be no gap between the keys hunks
-            for i in range(len(key_hunks) - 1):
-                this_hunk = key_hunks[i]
-                next_hunk = key_hunks[i + 1]
-                # if key_hunks[i].end_line != key_hunks[i + 1].start_line:
-                #     logging.warning(
-                #         f"Unexpected gap between keys '{key_hunks[i].key}' and '{key_hunks[i + 1].key}' "
-                #         f"in slice at lines {slice_hunk.start_line + 1}-{slice_hunk.end_line} in '{self.filename}'. "
-                #         f"Lines {key_hunks[i].end_line + 1}-{key_hunks[i + 1].start_line} are empty."
-                #     )
-                if this_hunk.end_line != next_hunk.start_line:
-                    # TODO: hunks are not contiguous so we trigger on comments etc
-                    logging.warning(
-                        f"Unexpected gap between keys '{this_hunk.key}' and '{next_hunk.key}' "
-                        f"in slice at lines {slice_hunk.start_line + 1}-{slice_hunk.end_line} in '{self.filename}'. "
-                        f"Lines {this_hunk.end_line + 1}-{next_hunk.start_line} are empty."
-                    )
-
-    def process(self) -> str:
-        self._process()
-        return self.contents
+                        indent = " " * key_hunks[0].indent
+                        hint += f"{indent}{k}:\n"
+                self._issue(
+                    message,
+                    hint=hint,
+                    start_line=slice_hunk.start_line,
+                    end_line=slice_hunk.end_line,
+                )
 
 
 if TYPE_CHECKING:
     _slice_keys_order: Stage = SliceKeysOrder.__new__(SliceKeysOrder)
 
 
-class NoGapBetweenSlicesKeyAndContents(Stage):
-    def __init__(self, contents: str, *, filename: str) -> None:
-        self.contents = contents
-        self.filename = filename
-
-    def _process(self) -> None:
-        slices_hunks = parse_yaml_hunks_for_key(self.contents, "slices")
-        if not slices_hunks:
-            logging.debug(f"No 'slices' hunk found in '{self.filename}'")
+class NoContentsEssentialGap(StageMixin):
+    def process(self) -> None:
+        _slices_hunk, slice_key_hunks = parse_slices_hunks(self.contents)
+        if not _slices_hunk:
+            self._issue("Incorrect 'slices' section (missing or multiple)")
             return
 
-        if len(slices_hunks) > 1:
-            logging.warning(f"Multiple 'slices' hunks found in '{self.filename}'")
-            return
+        for slice_hunk in slice_key_hunks:
+            key_hunks, _ = parse_key_children(
+                slice_hunk.lines[slice_hunk.key_line_index + 1 :],
+                start_line=slice_hunk.start_line + slice_hunk.key_line_index + 1,
+            )
+            if not key_hunks:
+                self._issue("The slice has no keys", start_line=slice_hunk.start_line)
+                continue
+            # There should be no gap between the keys hunks
+            for i in range(len(key_hunks) - 1):
+                this_hunk = key_hunks[i]
+                next_hunk = key_hunks[i + 1]
+                if this_hunk.end_line + 1 != next_hunk.start_line:
+                    self._issue(
+                        f"Unexpected gap between keys '{this_hunk.key}' and '{next_hunk.key}' "
+                        f"in slice '{slice_hunk.key}'",
+                        start_line=this_hunk.end_line + 1,
+                        end_line=next_hunk.start_line - 1,
+                    )
 
-        slices_hunk = slices_hunks[0]
-        slice_key_hunks = _split_keys_to_hunks(slices_hunk)
+
+if TYPE_CHECKING:
+    _no_contents_essential_gap: Stage = NoContentsEssentialGap.__new__(NoContentsEssentialGap)
+
+
+class NoGapBetweenSlicesKeyAndContents(StageMixin):
+    def process(self) -> None:
+        slices_hunk, slice_key_hunks = parse_slices_hunks(self.contents)
+        if not slices_hunk:
+            self._issue("Incorrect 'slices' section (missing or multiple)")
+            return
 
         if not slice_key_hunks:
-            logging.warning(f"No slice keys found in 'slices' hunk in '{self.filename}'")
+            # self._issue("The 'slices' section has no slices", start_line=slices_hunk.start_line)
             return
 
         first_key_hunk = slice_key_hunks[0]
 
-        if slices_hunk.start_line + 1 != first_key_hunk.start_line:
-            # logging.warning(
-            #     f"Unexpected gap between 'slices:' key and the first slice key "
-            #     f"in '{self.filename}'. Lines {slices_hunk.start_line + 1}-{first_key_hunk.start_line} are empty."
-            # )
-            # TODO: for now the hunks parsing + comments is not quite right,
-            #       so we need to namually go through the lines to check for gaps
-            lines_in_between = slices_hunk.lines[1 : first_key_hunk.start_line - slices_hunk.start_line]
-            # make sure all lines in between are comments. They should not be empty
-            stripped_lines = [line.strip() for line in lines_in_between if line.strip()]
-            if any(line and not line.startswith(COMMENT) for line in stripped_lines):
-                logging.warning(
-                    f"Unexpected gap between 'slices:' key and the first slice key "
-                    f"in '{self.filename}'. Lines {slices_hunk.start_line + 1}-{first_key_hunk.start_line} are empty."
-                )
-
-    def process(self) -> str:
-        self._process()
-        return self.contents
+        if slices_hunk.start_line + slices_hunk.key_line_index + 1 != first_key_hunk.start_line:
+            self._issue(
+                f"Unexpected gap between 'slices' key and first slice '{first_key_hunk.key}'",
+                start_line=slices_hunk.start_line,
+            )
 
 
 if TYPE_CHECKING:
@@ -777,19 +830,12 @@ if TYPE_CHECKING:
     )
 
 
-class FilesHaveNewlineAtEnd(Stage):
-    def __init__(self, contents: str, *, filename: str) -> None:
-        self.contents = contents
-        self.filename = filename
-
-    def _process(self) -> None:
+class FilesHaveNewlineAtEnd(StageMixin):
+    def process(self) -> None:
         lines = self.contents.splitlines()
         if not lines:
-            logging.warning(f"File '{self.filename}' is empty.")
+            self._issue("File is empty")
             return
-        # print(f"===='{self.filename}'====")
-        # print(lines[-2].replace(" ", "."))
-        # print(lines[-1].replace(" ", "."))
 
         trailing_newlines = 0
         for line in reversed(self.contents):
@@ -798,66 +844,88 @@ class FilesHaveNewlineAtEnd(Stage):
                 trailing_newlines += 1
             else:
                 break
-        # print(f"trailing_newlines: {trailing_newlines}")
 
-        # if len(lines[-1]) > 0 and lines[-1][-1] == "\n":
-        #     # last line ends with a newline, so we have at least one trailing newline
-        #     trailing_newlines = 1
-        # for line in reversed(lines):
-        #     if line.strip():
-        #         break
-        #     trailing_newlines += 1
         if trailing_newlines == 0:
-            logging.info(f"File '{self.filename}' does not end with a newline.")
+            self._issue("File does not end with a newline", start_line=len(lines))
         elif trailing_newlines > 1:
-            logging.info(f"File '{self.filename}' has {trailing_newlines} trailing newlines. Should have exactly one.")
-
-    def process(self) -> str:
-        self._process()
-        return self.contents
+            self._issue(
+                f"File has {trailing_newlines} trailing newlines. Should have exactly one",
+                start_line=len(lines) - trailing_newlines + 1,
+            )
 
 
 if TYPE_CHECKING:
-    _files_have_newline_st_end: Stage = FilesHaveNewlineAtEnd.__new__(FilesHaveNewlineAtEnd)
+    _files_have_newline_at_end: Stage = FilesHaveNewlineAtEnd.__new__(FilesHaveNewlineAtEnd)
+
+## TESTS #######################################################################
 
 
-def test_all_slices(directory: Path) -> None:
+def _target(filename: Path, directory: Path, stages: list[type[Stage]]) -> list[LintingNote]:
+    try:
+        contents = filename.read_text()
+    except UnicodeDecodeError:
+        # non-unicode file. must be some binary blob. skip it
+        # logging.debug(f"Skipping binary file: {filename}")
+
+        return [
+            LintingNote(
+                message="Skipping binary file",
+                issue=False,
+                filename=filename.relative_to(directory),
+            )
+        ]
+    file_notes: list[LintingNote] = []
+
+    for stage_cls in stages:
+        stage = stage_cls(contents, filename=filename)
+        stage.process()
+        file_notes.extend(stage.notes)
+
+    return file_notes
+
+
+def test_all_slices(directory: Path, jobs: int = 1) -> list[LintingNote]:
     slices_dir = directory / "slices"
     if not slices_dir.is_dir():
         raise FileNotFoundError(f"'slices' directory not found in {directory}")
 
     # list all the .yaml files in the slices directory
+    notes: list[LintingNote] = []
+
     yaml_files = list(slices_dir.glob("*.yaml"))
     if not yaml_files:
-        logging.warning(f"No .yaml files found in {slices_dir}")
-        return
-
-    logging.info(f"Found {len(yaml_files)} .yaml files in {slices_dir}")
+        notes.append(LintingNote(message=f"No .yaml files found in {slices_dir}", issue=True))
+        return notes
 
     stages: list[type[Stage]] = [
         EssentialsSorter,
-        # ContentsSorter,
-        CopyrightSliceExists,
-        # CopyrightSliceIsLast,
-        # SliceKeysOrder,
-        # NoGapBetweenSlicesKeyAndContents,
+        ContentsSorter,
+        CopyrightSliceIsLast,
+        SliceKeysOrder,
+        NoContentsEssentialGap,
+        NoGapBetweenSlicesKeyAndContents,
     ]
 
-    for yaml_file in yaml_files:
-        relative_path = yaml_file.relative_to(directory)
-        # if yaml_file.name != "dpkg.yaml":
-        #     continue
-        contents = yaml_file.read_text()
+    notes.append(LintingNote(message=f"Found {len(yaml_files)} .yaml files in {slices_dir}"))
 
-        logging.debug(f"Processing file: {relative_path}")
+    if jobs == 1:
+        for yaml_file in yaml_files:
+            notes.extend(_target(yaml_file, directory, stages))
+    else:
+        from concurrent.futures import ProcessPoolExecutor
 
-        for stage_cls in stages:
-            # contents = stage(contents, filename=str(yaml_file))
-            stage = stage_cls(contents, filename=str(relative_path))
-            contents = stage.process()
+        with ProcessPoolExecutor(max_workers=jobs) as executor:
+            futures = [executor.submit(_target, yf, directory, stages) for yf in yaml_files]
+            for future in futures:
+                notes.extend(future.result())
+
+    return notes
 
 
-def test_all_test_files(directory: Path) -> None:
+def test_all_test_files(
+    directory: Path,
+    jobs: int = 1,
+) -> list[LintingNote]:
     tests_dir = args.directory / "tests" / "spread" / "integration"
     if not tests_dir.is_dir():
         raise FileNotFoundError(f"'tests' directory not found in {args.directory}")
@@ -865,8 +933,13 @@ def test_all_test_files(directory: Path) -> None:
     # get all the .sh files in the tests directory and its subdirectories
     _bash_scripts = list(tests_dir.rglob("**/*.sh"))
 
+    return []
 
-def test_all_files(directory: Path) -> None:
+
+def test_all_files(
+    directory: Path,
+    jobs: int = 1,
+) -> list[LintingNote]:
     all_files = list(directory.rglob("**/*"))
     all_files = [f for f in all_files if f.is_file()]
 
@@ -881,35 +954,79 @@ def test_all_files(directory: Path) -> None:
         "rootfs",
     )
 
+    # Filter files to skip certain directories
+    filtered_files: list[Path] = []
     for file in all_files:
         relative_path = file.relative_to(directory)
         if any(str(relative_path).startswith(prefix) for prefix in skip_prefixes):
             logging.debug(f"Skipping file in '{skip_prefixes}': {relative_path}")
             continue
+        filtered_files.append(file)
 
-        try:
-            contents = file.read_text()
-        except UnicodeDecodeError:
-            # non-unicode file. must be some binary blob. skip it
-            logging.debug(f"Skipping binary file: {relative_path}")
-            continue
+    notes: list[LintingNote] = []
+    if jobs == 1:
+        for file in filtered_files:
+            notes.extend(_target(file, directory, stages))
+    else:
+        from concurrent.futures import ProcessPoolExecutor
 
-        logging.debug(f"Processing file: {relative_path}")
+        with ProcessPoolExecutor(max_workers=jobs) as executor:
+            futures = [executor.submit(_target, f, directory, stages) for f in filtered_files]
+            for future in futures:
+                notes.extend(future.result())
 
-        for stage_cls in stages:
-            stage = stage_cls(contents, filename=str(relative_path))
-            contents = stage.process()
+    # We will get a bunch of "Skipping binary file" notes. We don't want to show those here.
+    notes = [note for note in notes if "Skipping binary file" not in note.message]
+
+    return notes
+
+
+def maybe_colorize(text: str, *, no_color: bool) -> str:
+    if no_color:
+        return text
+
+    YELLOW = "\033[33m"
+    CYAN = "\033[36m"
+    NC = "\033[0m"  # No Color
+    if "ISSUE" in text:
+        text = text.replace("ISSUE", f"{YELLOW}ISSUE{NC}")  # Yellow
+    if "NOTE" in text:
+        text = text.replace("NOTE", f"{CYAN}NOTE{NC}")  # Cyan
+    if "HINT" in text:
+        text = text.replace("HINT", f"{CYAN}HINT{NC}")  # Cyan
+    return text
 
 
 ## MAIN ########################################################################
 
 
 def main(args: argparse.Namespace) -> None:
-    # check there is a 'slices' directory
+    slices_notes = test_all_slices(args.directory, jobs=args.jobs)
+    test_file_notes = test_all_test_files(args.directory, jobs=args.jobs)
+    all_files_notes = test_all_files(args.directory, jobs=args.jobs)
 
-    test_all_slices(args.directory)
-    test_all_test_files(args.directory)
-    test_all_files(args.directory)
+    all_notes = slices_notes + test_file_notes + all_files_notes
+
+    any_issues = False
+    for note in all_notes:
+        print(maybe_colorize(str(note), no_color=args.no_color))
+        if note.issue:
+            any_issues = True
+        if args.hint and note.hint:
+            hint_lines = note.hint.splitlines()
+            print(maybe_colorize(f".HINT: {hint_lines[0]}", no_color=args.no_color))
+            for hint_line in hint_lines[1:]:
+                print(f"       {hint_line}")
+
+    if not any_issues:
+        message = "No issues found"
+        if not args.no_color:
+            # party
+            message += " 🎂🥳"
+        print(message)
+        sys.exit(0)
+    else:
+        sys.exit(1)
 
 
 ################################################################################
@@ -924,6 +1041,16 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("directory", type=Path, help="chisel-releases directory")
+    parser.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Disable colored output (if colorlog is installed).",
+    )
+    parser.add_argument(
+        "--hint",
+        action="store_true",
+        help="Show hints for fixing issues (if available).",
+    )
     # parser.add_argument(
     #     "--log-level",
     #     type=str,
@@ -931,23 +1058,17 @@ def parse_args() -> argparse.Namespace:
     #     choices=["debug", "info", "warning", "error", "fatal", "critical"],
     #     help="Set the logging level (default: info).",
     # )
-    # parser.add_argument(
-    #     "--jobs",
-    #     "-j",
-    #     type=int,
-    #     default=1,  # -1 = as many as possible, 1 = no parallelism
-    #     help="Number of parallel jobs to use when fetching PR details. Default is 1 (no parallelism).",
-    # )
-    # parser.add_argument(
-    #     "--in-place",
-    #     action="store_true",
-    #     help="Modify the files in place. By default, the script only prints the changes that would be made.",
-    # )
-
+    parser.add_argument(
+        "--jobs",
+        "-j",
+        type=int,
+        default=1,  # -1 = as many as possible, 1 = no parallelism
+        help="Number of parallel jobs to use when fetching PR details. Default is 1 (no parallelism).",
+    )
     args = parser.parse_args()
-    # if args.jobs == 0 or args.jobs < -1:
-    #     parser.error("--jobs must be a positive integer or -1 for unlimited.")
-    # args.jobs = None if args.jobs == -1 else args.jobs  # None = as many as possible
+    if args.jobs == 0 or args.jobs < -1:
+        parser.error("--jobs must be a positive integer or -1 for unlimited.")
+    args.jobs = None if args.jobs == -1 else args.jobs  # None = as many as possible
     return args
 
 

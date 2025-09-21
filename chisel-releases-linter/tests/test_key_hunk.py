@@ -1,10 +1,10 @@
 # spellchecker: words subkey
-import pytest
 from pathlib import Path
 
-from helpers import kh, inline_yaml
+import pytest
+from helpers import inline_yaml, kh
 
-from src.chisel_releases_linter import KeyHunk, parse_yaml_hunks_for_key, parse_yaml_to_hunks
+from src.chisel_releases_linter import KeyHunk, find_yaml_hunks_for_key
 
 
 def test_key_hunk_parse_key() -> None:
@@ -26,6 +26,11 @@ def test_key_hunk_parse_key() -> None:
     assert KeyHunk.parse_key("  # key: value in comment") is None
     assert KeyHunk.parse_key("# key: value in comment") is None
     assert KeyHunk.parse_key("  # key: value: with: colons in comment") is None
+    assert KeyHunk.parse_key("key: value # with a comment") == "key"
+    assert KeyHunk.parse_key("key: { nested: map }") == "key"
+    assert KeyHunk.parse_key("  key: { nested: map }") == "key"
+    assert KeyHunk.parse_key("key: [ nested, list ]") == "key"
+    assert KeyHunk.parse_key("  key: [ nested, list ]") == "key"
 
 
 def test_key_hunk_basic() -> None:
@@ -40,6 +45,7 @@ def test_key_hunk_basic() -> None:
         "  subkey1: value2",
         "  subkey2: value3",
     ]
+
 
 def test_key_hunk_invalid() -> None:
     with pytest.raises(ValueError):
@@ -76,8 +82,10 @@ def test_key_hunk_invalid() -> None:
         """,
         )
 
-def test_parse_yaml_hunks_for_key() -> None:
-    results = parse_yaml_hunks_for_key(inline_yaml("""
+
+def test_find_yaml_hunks_for_key() -> None:
+    results = find_yaml_hunks_for_key(
+        inline_yaml("""
     key1:
         subkey1: value
         subkey2: value
@@ -87,7 +95,9 @@ def test_parse_yaml_hunks_for_key() -> None:
     key1:
         subkey1: value
         subkey2: value
-    """), "key1")
+    """),
+        "key1",
+    )
     assert len(results) == 2
     assert results[0] == kh(
         """
@@ -105,11 +115,12 @@ def test_parse_yaml_hunks_for_key() -> None:
         start_line=7,
     )
 
+
 def test_find_essential_keys(plucky_slices: list[Path]) -> None:
     for path in plucky_slices:
         contents = path.read_text()
         # _ = parse_yaml_to_hunks(contents)
-        results = parse_yaml_hunks_for_key(contents, "essential")
+        results = find_yaml_hunks_for_key(contents, "essential")
 
         # count how many times the word "essential:" appears in the file
         # as a poor proxy for how many essential keys should be found
@@ -123,10 +134,11 @@ def test_find_essential_keys(plucky_slices: list[Path]) -> None:
 
         assert len(results) == expected_count, f"{path.name}: expected {expected_count}, got {len(results)}"
 
+
 def test_find_contents_keys(plucky_slices: list[Path]) -> None:
     for path in plucky_slices:
         contents = path.read_text()
-        results = parse_yaml_hunks_for_key(contents, "contents")
+        results = find_yaml_hunks_for_key(contents, "contents")
 
         # count how many times the word "contents:" appears in the file
         # as a poor proxy for how many contents keys should be found

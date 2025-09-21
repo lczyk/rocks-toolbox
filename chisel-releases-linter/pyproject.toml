@@ -1,7 +1,7 @@
 [project]
 name = "chisel-releases-linter"
 description = "Custom linter for the chisel-releases repository"
-version = "0.0.1"
+version = "0.0.3"
 # spellchecker: ignore Marcin Konowalczyk
 authors = [{ name = "Marcin Konowalczyk", email = "marcin.konowalczyk@canonical.com" }]
 readme = "README.md"
@@ -31,7 +31,7 @@ extra_checks = true
 local_partial_types = true
 
 files = [
-    "./*.py",
+    "./src/*.py",
     "./tests/**/*.py",
     #
 ]
@@ -54,11 +54,11 @@ exclude = [
 line-length = 120
 lint.ignore = [
     "PLC0415", # imports should be at the top-level of the file
-    # "PLR2004", # magic values
+    "PLR2004", # magic values
     # "E402",    # module level import not at top of file
     # "PERF203", # try-except within the loop body
     # "E731",    # do not assign a lambda expression
-    # "PLR0915", # too many statements
+    "PLR0915", # too many statements
     "PLR0912", # too many branches
     "PLR0911", # too many return statements
     # "SIM105",
