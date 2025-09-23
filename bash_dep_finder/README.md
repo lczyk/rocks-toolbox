@@ -3,7 +3,7 @@
 Find dependencies of a bash script.
 
 ```bash
-bash_dep_finder --lines some_example_script.sh
+$ bash_dep_finder --lines some_example_script.sh
 cat 16
 mktemp 40
 apt 45,69,69,75
