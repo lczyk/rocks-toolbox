@@ -124,8 +124,10 @@ def format_result(
 ) -> str:
     out: str = ""
     if fmt == "plain":
+        print_headers = len(command_dict) > 1
         for script, commands in command_dict.items():
-            out += f"# {script}\n"
+            if print_headers:
+                out += f"# {script}\n"
             if lines:
                 for cmd, lineno in commands.items():
                     out += cmd + " " + ",".join(map(str, sorted(lineno))) + "\n"
