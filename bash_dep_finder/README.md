@@ -2,6 +2,11 @@
 
 Find dependencies of a bash script.
 
+Can also output to `--json` and accept multiple files as input.
+
+Tested in Python 3.9+.
+
+
 ```bash
 $ bash_dep_finder --lines some_example_script.sh
 cat 16
@@ -22,4 +27,39 @@ apt-cache 222
 cut 222
 ```
 
-Can also output to `--json` and accept multiple files as input.
+<!-- spellchecker: ignore venv pytest mypy -->
+## Testing and development
+
+Setup with:
+
+```bash
+uv sync && source .venv/bin/activate
+```
+
+Test with:
+
+```bash
+pytest
+```
+
+Format and typecheck with:
+
+
+```bash
+ruff format . && ruff check --fix . && mypy
+```
+
+
+### Tox
+
+To test with [tox](https://tox.wiki/en/latest/index.html), I recommend [tox-uv](https://github.com/tox-dev/tox-uv):
+
+```bash
+uv tool install tox --with tox-uv # use uv to install
+```
+
+and then just
+
+```bash
+tox
+```
