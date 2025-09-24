@@ -10,3 +10,4 @@ from .bash_dep_finder import (
 from .bash_dep_finder import (
     commands_in_script as commands_in_script,
 )
+from .bash_dep_finder import main as main

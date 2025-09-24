@@ -90,17 +90,52 @@ def commands_in_script(script_source: "str | bytes") -> dict[str, list[int]]:
     return command_dict
 
 
+def error(message: str, exit: bool = False) -> None:
+    print(f"Error: {message}", file=sys.stderr)
+    if exit:
+        sys.exit(1)
+
+
+def read_sources(scripts: list[str]) -> list[tuple[str, str]]:
+    sources: list[tuple[str, str]] = []
+
+    if not scripts:
+        error("Error: No scripts provided.", exit=True)
+
+    for script in scripts:
+        if not os.path.isfile(script):
+            error(f"Error: {script} is not a valid file.", exit=False)
+        try:
+            with open(script, encoding="utf-8") as f:
+                script_source = f.read()
+        except PermissionError:
+            message = (
+                f"Error: Permission denied when trying to read {script}. Skipping it. "
+                "If this tool is installed as a snap and you're trying to read"
+                "a file outside your home directory (or in a hidden directory),"
+                "this might be the reason."
+            )
+            error(message, exit=False)
+            continue
+        except Exception as e:
+            error(f"Error: Could not read {script}: {e}", exit=False)
+            continue
+        sources.append((script, script_source))
+
+    if not sources:
+        error("Error: No valid scripts to process.", exit=True)
+
+    return sources
+
+
 def main() -> None:
     args = parse_args()
 
+    sources = read_sources(args.scripts)
+
     # Collect commands from all scripts
     command_dict: dict[str, dict[str, list[int]]] = {}
-    for script in args.scripts:
-        if not os.path.isfile(script):
-            print(f"Error: {script} is not a valid file.", file=sys.stderr)
-            sys.exit(1)
-        with open(script, encoding="utf-8") as f:
-            script_source = f.read()
+    for script, script_source in sources:
         script_commands = commands_in_script(script_source)
         command_dict[script] = script_commands
 
