@@ -68,3 +68,4 @@ tox
 
 - [ ] `bash`/`dash` mode
 - [ ] add a list of known sources to suggest (eg.coreutils, sed, awk etc)
+- [ ] test all the bash keywords work by themselves in a rootless env
