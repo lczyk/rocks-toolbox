@@ -1,0 +1,22 @@
+name: bash-dep-finder
+base: core24
+version: '0.1.2'
+summary: Bash dependency finder
+description: Find dependencies in bash scripts using tree-sitter.
+
+platforms:
+  amd64:
+  arm64:
+
+grade: devel # must be 'stable' to release into candidate/stable channels
+confinement: strict
+
+apps:
+  bash-dep-finder:
+    command: bin/bash_dep_finder
+
+parts:
+  bash-dep-finder:
+    plugin: python
+    source: .
+

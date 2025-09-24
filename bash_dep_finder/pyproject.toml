@@ -1,3 +1,11 @@
+[build-system]
+requires = ["flit_core >=3.2,<4"]
+build-backend = "flit_core.buildapi"
+
+[tool.flit.sdist]
+include = ["doc/"]
+exclude = [".github", ".gitignore"]
+
 [project]
 name = "bash-dep-finder"
 version = "0.1.0"
@@ -7,11 +15,14 @@ requires-python = ">=3.9"
 dependencies = [
     "tree-sitter>=0.23.2",
     "tree-sitter-bash>=0.23.3",
-    "tree-sitter-python>=0.23.6",
 ]
+
+[project.scripts]
+bash_dep_finder = "bash_dep_finder:main"
 
 [dependency-groups]
 dev = [
+    "flit>=3.12.0",
     "mypy>=1.18.2",
     "pytest>=8.4.2",
     "ruff>=0.13.1",

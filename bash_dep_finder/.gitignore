@@ -5,11 +5,18 @@ __pycache__
 .ruff_cache
 .tox
 .pytest_cache
+
+# python build stuff
+dist
+build
 *.egg-info
+
+# Snap build stuff
+snap_contents/
+*.snap
 
 # Virtual environment
 .venv
-
 
 # all the deps are here only for development,
 # so we don't really need the lock file
