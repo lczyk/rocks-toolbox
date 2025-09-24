@@ -63,3 +63,8 @@ and then just
 ```bash
 tox
 ```
+
+## TODO
+
+- [ ] `bash`/`dash` mode
+- [ ] add a list of known sources to suggest (eg.coreutils, sed, awk etc)
