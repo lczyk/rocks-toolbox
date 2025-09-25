@@ -41,8 +41,17 @@ or installing it first
 uv tool install git+https://github.com/lczyk/rocks-toolbox@bash_dep_finder#subdirectory=bash_dep_finder
 ```
 
-There are also snap instructions in the `snap` folder, or you can build and install python wheel from this folder in all
-the usual ways.
+Here is a all-in-one scriptlet for bootstrapping uv in a container:
+
+```bash
+apt update || sudo apt update
+apt install -y curl || sudo apt install -y curl
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env
+uv tool install git+https://github.com/lczyk/rocks-toolbox@bash_dep_finder#subdirectory=bash_dep_finder
+```
+
+There are also snap instructions in the `snap` folder, or you can build and install python wheel from this folder in all the usual ways.
 
 <!-- spellchecker: ignore venv pytest mypy -->
 ## Testing and development
