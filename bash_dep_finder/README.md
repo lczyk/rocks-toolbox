@@ -27,6 +27,23 @@ apt-cache 222
 cut 222
 ```
 
+# Installation
+
+The easiest way to use the tool is with [`uvx`](https://docs.astral.sh/uv/guides/tools/):
+
+```bash
+uvx --from git+https://github.com/lczyk/rocks-toolbox@bash_dep_finder#subdirectory=bash_dep_finder bash_dep_finder --help
+```
+
+or installing it first
+
+```bash
+uv tool install git+https://github.com/lczyk/rocks-toolbox@bash_dep_finder#subdirectory=bash_dep_finder
+```
+
+There are also snap instructions in the `snap` folder, or you can build and install python wheel from this folder in all
+the usual ways.
+
 <!-- spellchecker: ignore venv pytest mypy -->
 ## Testing and development
 
