@@ -45,7 +45,7 @@ Here is a all-in-one scriptlet for bootstrapping uv in a container:
 
 ```bash
 apt update || sudo apt update
-apt install -y curl || sudo apt install -y curl
+apt install -y curl git || sudo apt install -y curl git
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source $HOME/.local/bin/env
 uv tool install git+https://github.com/lczyk/rocks-toolbox@bash_dep_finder#subdirectory=bash_dep_finder
